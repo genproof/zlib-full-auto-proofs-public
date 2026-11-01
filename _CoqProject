@@ -1,0 +1,4 @@
+-Q quickproof/coq/QuickProof QuickProof
+-R src Zlib
+quickproof/coq/QuickProof
+src

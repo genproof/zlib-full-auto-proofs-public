@@ -1,0 +1,60 @@
+// Law rj_any_input: For any windowBits in zlib.h's ranges for inflateInit2 and any input (any length the allocator
+// provides), fed to any number of inflate() calls in any pieces below 2^32 bytes, empty ones included, each with any
+// flush and any output space below 2^32 bytes, none included (input and output each an object of exactly avail_in and
+// avail_out bytes), with inflateSetDictionary of any bytes between calls or not: inflateInit2 returns Z_OK, every
+// inflate() returns one of the codes zlib.h documents for it: Z_OK, Z_STREAM_END, Z_NEED_DICT, Z_DATA_ERROR or
+// Z_BUF_ERROR, and a call offered neither input nor output space does not return Z_OK and moves no pointer and no
+// counter (Z_MEM_ERROR ends the run).
+#include "laws_common.h"
+#include "laws_session.h"
+
+int main(void) {
+	int window_bits = (int) nondet_u32();
+	gp_assume(inflate_window_ok(window_bits));
+	size_t input_len = upto(PTRDIFF_MAX);
+	unsigned char *input = alloc_any_bytes(input_len);
+	if (input == NULL)
+		return 0;
+	z_stream strm;
+	new_stream(&strm);
+	int code = inflateInit2(&strm, window_bits);
+	if (code == Z_MEM_ERROR)
+		return 0;
+	gp_assert(code == Z_OK);
+	size_t read = 0;
+	struct position at;
+	do {
+		size_t take = upto(clip(input_len - read));
+		size_t room = nondet_u32();
+		unsigned char *piece = copy_of(input + read, take);
+		unsigned char *out = alloc_any_bytes(room);
+		if (piece == NULL || out == NULL)
+			return 0;
+		set_buffer(&strm, piece, take, out, room);
+		position_of(&strm, &at);
+
+		code = inflate(&strm, (int) nondet_u32());
+
+		if (code == Z_MEM_ERROR)
+			return 0;
+		// zlib.h, inflate() "returns Z_OK", "Z_STREAM_END", "Z_NEED_DICT", "Z_DATA_ERROR", "Z_STREAM_ERROR if
+		// the stream structure was inconsistent" (it never is here), "Z_MEM_ERROR", "Z_BUF_ERROR"
+		gp_assert(code == Z_OK || code == Z_STREAM_END || code == Z_NEED_DICT || code == Z_DATA_ERROR ||
+		          code == Z_BUF_ERROR);
+		// zlib.h, inflate() "returns Z_OK if some progress has been made (more input processed or more output
+		// produced)"
+		if (take == 0 && room == 0)
+			gp_assert(code != Z_OK && unmoved(&strm, &at));
+		read += take - strm.avail_in;
+		free(piece);
+		free(out);
+		if (nondet_u8() == 0) {
+			size_t dict_len = nondet_u32();
+			unsigned char *dict = alloc_any_bytes(dict_len);
+			if (dict == NULL || inflateSetDictionary(&strm, dict, (uInt) dict_len) == Z_MEM_ERROR)
+				return 0;
+			free(dict);
+		}
+	} while (nondet_u8() != 0);
+	return 0;
+}
