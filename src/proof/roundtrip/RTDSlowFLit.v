@@ -1,0 +1,243 @@
+(* RT-D part SLOW: the functional part flit_part of deflate_slow (statement: RTDSlowKit.v). *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.roundtrip.RTDSlowKit.
+Require Import Zlib.proof.roundtrip.RTDSlLitKit.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+Theorem flit_ok : flit_part.
+Proof.
+  intros dict D BS p s0 z0 flush s z evs s1 r Hs Hf HSI Hrdy HMID HFM HG HFI Hnot Hav E.
+  pose proof Hs as (_ & _ & _ & [Htl _] & Hfbo & _).
+  pose proof (fboev_ok Hfbo) as Hfboev.
+  pose proof Hf as (_ & _ & _ & _ & Hfbof).
+  destruct HG as (Hdict & HD & Hp0 & Hal).
+  destruct HFI as (k & x & BS' & syms & Hz & Hk & Hbits).
+  set (D' := D ++ sublist (z_next_in z0) (z_next_in z0 + k) (z_in z0)) in Hk.
+  set (H := dict ++ D').
+  destruct Hk as ((Hkw & Hkm & Hwt & Hb & He & Hr & Hd) & Hkh).
+  fold H in Hkw, He, Hd.
+  set (off := Zlength H - (d_strstart s + d_lookahead s)) in He, Hd.
+  pose proof HSI as (HW2 & Hq & HLs & HEI).
+  pose proof HW2 as [HW Hse].
+  pose proof HW as (Hp & Hws & Hwp & Hww & Hwh & Hwm & Hl0 & _).
+  pose proof HMID as (Hpk & Hws1 & _).
+  pose proof (lk_pre s s1 Hpk) as H1.
+  lkf Hpk d_strstart. rename E0 into Fss.
+  lkf Hpk d_lookahead. rename E0 into Fla.
+  lkf Hpk d_window. rename E0 into Fwin.
+  lkf Hpk d_tr. rename E0 into Ftr.
+  lkf Hpk d_pbm. rename E0 into Fpbm.
+  lkf Hpk d_po. rename E0 into Fpo.
+  lkf Hpk d_block_start. rename E0 into Fbs.
+  lkf Hpk d_match_available. rename E0 into Fav.
+  lkf Hpk d_w_size. rename E0 into Fws.
+  lkf Hpk d_w_bits. rename E0 into Fwb.
+  lkf Hpk d_pending_buf_size. rename E0 into Fpbs.
+  destruct Hwm as (Wm1 & Wm2 & Wm3 & Wm4 & Wm5).
+  assert (Hav0 : d_match_available s = 1) by (clear - Fav Wm3 Hav; lia).
+  destruct (Wm5 Hav0) as (Hfn & HS1 & _).
+  assert (Hlev : d_level s <> 0) by (intros E1; unfold fn_of in Hfn; rewrite E1 in Hfn; discriminate).
+  assert (Hmat0 : d_matches s = 0).
+  { unfold whash in Hwh. destruct (Z.eqb_spec (d_level s) 0) as [E1|_]; [contradiction|exact (proj1 Hwh)]. }
+  pose proof (wsize_range s Hp) as Hwsz. pose proof (L_range s Hp) as HLr.
+  assert (Hsend : tr_sym_end (d_tr s) = 3 * (d_L s - 1))
+    by (destruct Hp as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & _ & X & _); exact X).
+  assert (Hlv : 0 <= d_level s <= 9)
+    by (destruct Hp as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & _ & _ & X & _); exact X).
+  pose proof Hrdy as (Hla & Hroom & Hdef).
+  pose proof Hwp as (P1 & P2 & P3 & P4 & P5 & P6 & P7 & P8 & P9).
+  pose proof Hws as (S1 & S2 & S3 & S4 & S5).
+  rewrite (proj2 (Z.eqb_neq _ _) Hlev), Hav0 in Hd.
+  (* the pending byte *)
+  set (c := Znth (d_strstart s - 1) (mb_val (d_window s))).
+  assert (Hdc : Znth (d_strstart s - 1) (mb_def (d_window s)) = true)
+    by (apply Hdef; clear - HS1; unfold MAX_MATCH; lia).
+  assert (Hc : 0 <= c < 256).
+  { destruct S2 as [_ Hbb]. apply Hbb; [clear - S1 S3 P3 HS1 Hla; lia|exact Hdc]. }
+  assert (HcH : c = Znth (off + (d_strstart s - 1)) H).
+  { unfold c, off. destruct Hkw as [_ Hkw2]. apply Hkw2. clear - HS1 Hla; lia. }
+  assert (Hd' : F.syms_data (F.expand dict (BS ++ BS')) (map fsym (syms ++ [(0, c)])) =
+                sublist 0 (off + d_strstart s) H).
+  { rewrite sll_syms_data_snoc, Hd, HcH. destruct Hkw as [Hkw1 _].
+    replace (off + d_strstart s) with (off + (d_strstart s - 1) + 1) by lia.
+    rewrite sublist_last_1 by (unfold off in *; clear - Hkw1 HS1 Hla P1 P2; lia).
+    reflexivity. }
+  assert (Hrd : mb_rd (d_window s1) (u32 (d_strstart s1 - 1)) = Some c).
+  { rewrite Fwin, Fss, u32_small by (clear - HS1 Hwsz P1 P3 S3; lia).
+    assert (Ir : in_range (d_strstart s - 1) (Zlength (mb_val (d_window s))) = true).
+    { unfold in_range. apply andb_true_iff. split; [apply Z.leb_le|apply Z.ltb_lt];
+        clear - S1 S3 P3 HS1 Hla; lia. }
+    unfold mb_rd. rewrite Ir, Hdc. reflexivity. }
+  (* the tally, on kcore3's symbols *)
+  destruct Hwt as (T & Lsy & Fs & _ & Bl).
+  specialize (Bl Hlev).
+  assert (L32 : tr_lit_bufsize (d_tr s) <= 32768) by exact (proj2 HLr).
+  destruct (Htl (d_tr s) (d_pbm s) syms c T Lsy L32 Hc) as (t' & m' & HT & Htok & Hfr).
+  assert (HT1 : c_tr_tally_lit (d_trm s1) c =
+                Some ((t', m'), 3 * Zlength syms + 3 =? tr_sym_end (d_tr s))).
+  { unfold d_trm. rewrite Ftr, Fpbm. exact HT. }
+  unfold dsl_lit in E. rewrite Hrd in E. cbn [bind] in E. unfold c_dtally_lit in E. rewrite HT1 in E.
+  cbn [bind fst snd] in E.
+  destruct Hfr as (Fc & Fm & Fp & Fbb & Fbv & Fbu & Fg).
+  set (s2 := set_d_trm s1 (t', m')) in E.
+  assert (H2 : lk s2 = lk s) by (unfold s2; rewrite lk_trm; exact H1).
+  assert (Ho : outok s) by (destruct HEI as (_ & _ & Ho & _); exact Ho).
+  assert (Ho2 : outok s2).
+  { apply (outok_grow s s2 Ho).
+    - change (pb_grow (tr_out (d_tr s)) (d_pbm s) (tr_out t') m'). exact Fg.
+    - change (d_po s1 = d_po s). exact Fpo.
+    - exact Fp.
+    - change (d_pending_buf_size s1 = d_pending_buf_size s). exact Fpbs.
+    - destruct Ho as (_ & Hbo & _). change (bits_ok (tr_out t')). unfold bits_ok in *.
+      rewrite Fbb, Fbv, Fp. exact Hbo. }
+  assert (Hcfg2 : tr_cfg (d_tr s2) = tr_cfg (d_tr s)) by exact Fc.
+  pose proof Hcfg2 as Gc. unfold tr_cfg in Gc. injection Gc as C1 C2 C3 C4.
+  assert (GL2 : d_L s2 = d_L s) by exact C1.
+  assert (Glev2 : d_level s2 = d_level s) by exact C3.
+  assert (Gstr2 : d_strategy s2 = d_strategy s) by exact C4.
+  assert (Gws2 : d_w_size s2 = d_w_size s) by exact Fws.
+  assert (HEI2 : EI s0 z0 flush s2 z evs).
+  { apply (EI_frame s0 z0 flush s z evs s2 HEI Ho2).
+    - apply same_prm_frame; [exact H2|exact Hcfg2].
+    - apply api_eq_frame. exact H2.
+    - unfold ub. change (d_strstart s1 - d_block_start s1 + d_lookahead s1 = ub s).
+      rewrite Fss, Fbs, Fla. reflexivity.
+    - exact Fp.
+    - exact Fbv. }
+  assert (Hq2 : quiet s2).
+  { destruct Hq as (Q1 & Q2 & Q3). split; [|split].
+    - change (o_pending (tr_out t') = 0). rewrite Fp. exact Q1.
+    - change (d_po s1 = 0). rewrite Fpo. exact Q2.
+    - change (o_bi_valid (tr_out t') <= 7). rewrite Fbv. exact Q3. }
+  assert (Hbits2 : F.bytes_bits (x ++ pend s2) ++ bibits s2 = bibits s0 ++ enc_out p BS' false).
+  { rewrite (pend_quiet s2 Hq2). rewrite (pend_quiet s Hq) in Hbits.
+    replace (bibits s2) with (bibits s); [exact Hbits|].
+    unfold bibits, d_bi_valid. change (d_tr s2) with t'. rewrite Fbb, Fbv. reflexivity. }
+  assert (Hsym' : Forall (sym_ok s) (syms ++ [(0, c)])).
+  { apply Forall_app. split; [exact Fs|]. constructor; [|constructor].
+    split; [unfold valid_sym; cbn [fst snd]; clear - Hc; lia|].
+    cbn [fst]. split; intros; congruence. }
+  assert (Hbl' : blk_len (syms ++ [(0, c)]) = d_strstart s - d_block_start s).
+  { rewrite blk_len_app. change (sym_len (0, c)) with 1. clear - Bl Hav0; lia. }
+  assert (Hzin0 : zin_in z0 /\ adler_ok (d_wrap s0) (z_adler z0)).
+  { destruct HEI as ((_ & _ & _ & _ & Hz0 & _ & Ha0) & _). split; [exact (proj1 (zin_ok_zall z0 Hz0))|exact Ha0]. }
+  revert E.
+  destruct (Z.eqb_spec (3 * Zlength syms + 3) (tr_sym_end (d_tr s))) as [Ef|Ef]; intros E.
+  - (* FLUSH_BLOCK_ONLY(s, 0) *)
+    assert (HLen' : Zlength (syms ++ [(0, c)]) = d_L s - 1).
+    { rewrite Zlength_app, Zlength_cons, Zlength_nil. clear - Ef Hsend; lia. }
+    assert (Hpre : fbo_pre s2 z (syms ++ [(0, c)]) 0).
+    { split; [|split; [|split; [|split; [|split; [|split; [|split; [|split; [|split;
+        [|split; [|split; [|split]]]]]]]]]]].
+      - apply (prm_frame s s2 Hp H2 Hcfg2); [exact (proj1 Fg)|exact (proj1 (proj2 Fg))].
+      - exact Hws1.
+      - rewrite Glev2. clear - Hlev Hlv; lia.
+      - exact Htok.
+      - rewrite GL2, HLen'. clear; lia.
+      - change (blk_len (syms ++ [(0, c)]) = d_strstart s1 - d_block_start s1). rewrite Fss, Fbs. exact Hbl'.
+      - change (d_block_start s1 <= d_strstart s1). rewrite Fss, Fbs. exact P4.
+      - change (d_strstart s1 - d_block_start s1 <= 16777216). rewrite Fss, Fbs. exact P5.
+      - change (0 <= d_block_start s1 ->
+                d_strstart s1 - d_block_start s1 <= 65535 /\ d_strstart s1 <= Zlength (mb_val (d_window s1)) /\
+                forall i, d_block_start s1 <= i < d_strstart s1 -> Znth i (mb_def (d_window s1)) = true).
+        rewrite Fss, Fbs, Fwin. intros Hb0. split; [|split].
+        + unfold MIN_LOOKAHEAD, MAX_MATCH, MIN_MATCH in Hroom. clear - Hb0 Hroom S3 Hwsz; lia.
+        + clear - S1 S3 P3 P1; lia.
+        + intros i Hi. apply Hww. clear - Hi Hla Hb0; lia.
+      - exact Ho2.
+      - exact Hq2.
+      - clear; lia.
+      - destruct HEI as (_ & _ & _ & _ & _ & [_ Hzo] & _). exact Hzo. }
+    assert (Hsym2 : Forall (sym_ok s2) (syms ++ [(0, c)])).
+    { eapply Forall_impl; [|exact Hsym']. intros y. apply sym_ok_frame; assumption. }
+    assert (HLen2 : Zlength (syms ++ [(0, c)]) = d_L s2 - 1) by (rewrite GL2; exact HLen').
+    assert (Hneg2 : d_block_start s2 < 0 -> MAX_DIST s2 < d_strstart s2 - d_block_start s2).
+    { change (d_block_start s1 < 0 -> MAX_DIST s2 < d_strstart s1 - d_block_start s1).
+      unfold MAX_DIST. rewrite Gws2, Fss, Fbs. exact P6. }
+    destruct (Hfboev s0 z0 flush s2 z evs (syms ++ [(0, c)]) 0 HEI2 Hpre Hsym2
+                (fun H => ltac:(discriminate)) (fun _ => or_introl HLen2) Hneg2)
+      as (s3 & z3 & e & Hc3 & He3 & HEI3 & Hfk & Hbs3 & Htr3 & Hcfg3 & Hmat3 & Hbv3 & _ & Hpend3 & Hai3).
+    rewrite Hc3 in E. cbn [bind] in E.
+    assert (Hbs3' : d_block_start s3 = d_strstart s) by (rewrite Hbs3; exact Fss).
+    (* the functional flush *)
+    assert (Hkw2 : kwin H s2).
+    { change (kwin H s1). unfold kwin. rewrite Fss, Fla, Fwin. exact Hkw. }
+    assert (Hv0 : 0 <= d_bi_valid s0).
+    { destruct HEI as ((_ & Ho0 & _) & _). destruct Ho0 as (_ & (Hb0 & _) & _). unfold d_bi_valid. lia. }
+    assert (Hoff2 : Zlength H - (d_strstart s2 + d_lookahead s2) = off).
+    { change (Zlength H - (d_strstart s1 + d_lookahead s1) = off). rewrite Fss, Fla. reflexivity. }
+    assert (Hwb2 : d_w_bits s2 = d_w_bits s) by exact Fwb.
+    destruct (fbo_bits_step s0 s2 z s3 z3 (syms ++ [(0, c)]) 0 dict D' BS BS' p x Hfbof Hpre Hkw2)
+      as (x' & blk & Hzo & Hb' & He' & Hbits');
+      [rewrite Hwb2; exact Hb
+      |fold H; rewrite Hoff2; change (d_block_start s2) with (d_block_start s1); rewrite Fbs; exact He
+      |rewrite Hwb2; apply sll_syms_rok_snoc; [exact Hr|exact Hc]
+      |fold H; rewrite Hoff2; change (d_strstart s2) with (d_strstart s1); rewrite Fss; exact Hd'
+      |exact Hp0|exact Hal|exact Hv0|exact Hbits2|exact Hc3|].
+    assert (Er : r = (let s' := set_d_strstart s3 (u32 (d_strstart s3 + 1)) in
+                      let s' := set_d_lookahead s' (u32 (d_lookahead s' - 1)) in
+                      if z_avail_out z3 =? 0 then inr (s', z3, Some need_more) else inl (s', z3))).
+    { cbv zeta in E |- *. destruct (z_avail_out z3 =? 0); injection E as <-; reflexivity. }
+    subst r.
+    assert (Hz3 : 0 <= z_avail_out z3).
+    { destruct HEI3 as (_ & _ & _ & _ & _ & [_ (Hz3 & _)] & _). exact Hz3. }
+    assert (Hzst : zstep (d_wrap s0) z0 z3 k (x ++ x')).
+    { replace k with (k + 0) by lia. apply (zstep_trans _ z0 z z3); [exact (proj1 Hzin0)|exact (proj2 Hzin0)|exact Hz|].
+      apply zout_only_zstep; [destruct HEI as (_ & _ & _ & _ & _ & Hza & Had & _); exact Hza
+                             |destruct HEI as (_ & _ & _ & _ & _ & Hza & Had & _); exact Had|exact Hzo|exact Hz3]. }
+    apply (flit_fin dict D BS p s0 z0 flush s z evs s1 s3 z3 k (x ++ x') (BS' ++ [blk]) []
+             HSI Hrdy HMID HFM Hnot Hav Hkw Hkh).
+    + rewrite (lk_fbo s2 s3 Hfk). exact H2.
+    + lkf Hfk d_prev. exact E0.
+    + lkf Hfk d_head. exact E0.
+    + lkf Hfk d_ins_h. exact E0.
+    + lkf Hfk d_match_length. exact E0.
+    + lkf Hfk d_match_start. exact E0.
+    + lkf Hfk d_strstart. transitivity (d_strstart s1); [exact E0|exact Fss].
+    + lkf Hfk d_lookahead. transitivity (d_lookahead s1); [exact E0|exact Fla].
+    + exact Htr3.
+    + rewrite Zlength_nil. clear - HLr; lia.
+    + constructor.
+    + change (blk_len []) with 0. rewrite Hbs3'. clear; lia.
+    + rewrite Hcfg3. exact Hcfg2.
+    + exact Hzst.
+    + rewrite app_assoc. rewrite Hwb2 in Hb'. exact Hb'.
+    + rewrite app_assoc, He'. fold H. rewrite Hoff2, Hbs3'. change (d_strstart s2) with (d_strstart s1).
+      rewrite Fss. reflexivity.
+    + cbn. exact I.
+    + cbn [map]. unfold F.syms_data. cbn [fold_left]. rewrite app_assoc, He'. fold H. rewrite Hoff2.
+      change (d_strstart s2) with (d_strstart s1). rewrite Fss. reflexivity.
+    + exact Hbits'.
+  - (* no flush *)
+    assert (Er : r = (let s' := set_d_strstart s2 (u32 (d_strstart s2 + 1)) in
+                      let s' := set_d_lookahead s' (u32 (d_lookahead s' - 1)) in
+                      if z_avail_out z =? 0 then inr (s', z, Some need_more) else inl (s', z))).
+    { cbn [bind] in E. cbv zeta in E |- *. destruct (z_avail_out z =? 0); injection E as <-; reflexivity. }
+    subst r.
+    assert (HLen' : Zlength (syms ++ [(0, c)]) <= d_L s - 2).
+    { rewrite Zlength_app, Zlength_cons, Zlength_nil. clear - Ef Hsend Lsy; lia. }
+    apply (flit_fin dict D BS p s0 z0 flush s z evs s1 s2 z k x BS' (syms ++ [(0, c)])
+             HSI Hrdy HMID HFM Hnot Hav Hkw Hkh).
+    + exact H2.
+    + reflexivity.
+    + reflexivity.
+    + reflexivity.
+    + reflexivity.
+    + reflexivity.
+    + exact Fss.
+    + exact Fla.
+    + exact Htok.
+    + exact HLen'.
+    + exact Hsym'.
+    + change (blk_len (syms ++ [(0, c)]) = d_strstart s - d_block_start s1). rewrite Fbs. exact Hbl'.
+    + exact Hcfg2.
+    + exact Hz.
+    + exact Hb.
+    + change (d_block_start s2) with (d_block_start s1). rewrite Fbs. exact He.
+    + apply sll_syms_rok_snoc; [exact Hr|exact Hc].
+    + exact Hd'.
+    + exact Hbits2.
+Qed.

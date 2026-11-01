@@ -1,0 +1,248 @@
+(** * deflate_slow: the loop invariant, the split of one iteration, the part statements
+
+    c_deflate_slow = [loop FUEL (dsl_body flush)] then [dsl_end]; dsl_body = c_refill then dsl_step;
+    dsl_step = [dsl_pre] (INSERT_STRING, longest_match, the FILTERED / TOO_FAR filter) then one of
+    [dsl_match] (emit the previous match), [dsl_lit] (emit the pending literal), [dsl_cand] (make the byte
+    pending).  The loop invariant is [SI s0 z0 flush s z evs] ([s0], [z0]: the call's start; [evs]: the blocks
+    emitted so far).  Each part is a [Prop] proved in its own file (LTCSlow<Part>.v) from the specs it uses;
+    LTCSlow2.v assembles them. *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.deflate.LTCSpecs2.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+(** ** The invariant *)
+
+(** What holds during the whole call: the call's precondition, the output state, the frame, the stream
+    composed from the call's start, the bit chain and the events. *)
+Definition EI (s0 : dstate) (z0 : strm) (flush : Z) (s : dstate) (z : strm) (evs : list dev) : Prop :=
+  compress_pre2 s0 z0 flush /\ fn_of s0 = 2 /\
+  outok s /\ same_prm s0 s /\ api_eq s0 s /\ zall z /\ adler_ok (d_wrap s0) (z_adler z) /\
+  (exists k x, zstep (d_wrap s0) z0 z k x /\ bytes x /\ k + ub s0 = sum_len evs + ub s) /\
+  ev_chain (Gb s0 (z_total_out z0)) evs (Gb s (z_total_out z)) /\
+  Forall (ev_ok s0 flush) evs.
+
+(** The loop invariant (at the top of each iteration). *)
+Definition SI (s0 : dstate) (z0 : strm) (flush : Z) (s : dstate) (z : strm) (evs : list dev) : Prop :=
+  W2 s /\ quiet s /\ Forall (fun e => ev_last e = 0) evs /\ EI s0 z0 flush s z evs.
+
+(** The loop measure: every iteration that goes on consumes a lookahead byte; fill_window moves bytes from
+    avail_in to lookahead. *)
+Definition msr (s : dstate) (z : strm) : Z := z_avail_in z + d_lookahead s.
+
+(** After the refill (no break): a byte to process, room for a match (strstart + MIN_LOOKAHEAD fits in the window)
+    and the window defined up to strstart + MAX_MATCH. *)
+Definition rdy (s : dstate) : Prop :=
+  1 <= d_lookahead s /\ d_strstart s + MIN_LOOKAHEAD <= d_window_size s /\
+  (forall i, 0 <= i <= d_strstart s + MAX_MATCH -> Znth i (mb_def (d_window s)) = true).
+
+(** ** The split of deflate_slow *)
+
+Definition dsl_pre (s : dstate) : option dstate :=
+  let* (s, hash_head) := c_insert_head s in
+  let s := set_d_prev_length s (d_match_length s) in
+  let s := set_d_prev_match s (d_match_start s) in
+  let s := set_d_match_length s (MIN_MATCH - 1) in
+  if negb (hash_head =? NIL) && (d_prev_length s <? d_max_lazy_match s) &&
+      (u32 (d_strstart s - hash_head) <=? max_dist s) then
+     let* (s, ml) := c_longest_match s hash_head in
+     let s := set_d_match_length s ml in
+     if (d_match_length s <=? 5) &&
+        ((d_strategy s =? Z_FILTERED) ||
+         ((d_match_length s =? MIN_MATCH) && (u32 (d_strstart s - d_match_start s) >? TOO_FAR)))
+     then Some (set_d_match_length s (MIN_MATCH - 1))
+     else Some s
+  else Some s.
+
+Definition dsl_match (s : dstate) (z : strm) : option ((dstate * strm) + dexit) :=
+    let max_insert := u32 (d_strstart s + d_lookahead s - MIN_MATCH) in
+    let* (s, bflush) := c_dtally_dist s (u32 (d_strstart s - 1 - d_prev_match s))
+                                        (u32 (d_prev_length s - MIN_MATCH)) in
+    let s := set_d_lookahead s (u32 (d_lookahead s - u32 (d_prev_length s - 1))) in
+    let s := set_d_prev_length s (u32 (d_prev_length s - 2)) in
+    let* s := loop FUEL (dsl_insert_body max_insert) s in
+    let s := set_d_match_available s 0 in
+    let s := set_d_match_length s (MIN_MATCH - 1) in
+    let s := set_d_strstart s (u32 (d_strstart s + 1)) in
+    c_bflush s z bflush.
+
+Definition dsl_lit (s : dstate) (z : strm) : option ((dstate * strm) + dexit) :=
+    let* c := mb_rd (d_window s) (u32 (d_strstart s - 1)) in
+    let* (s, bflush) := c_dtally_lit s c in
+    let* (s, z) := (if bflush then c_flush_block_only s z 0 else Some (s, z)) in
+    let s := set_d_strstart s (u32 (d_strstart s + 1)) in
+    let s := set_d_lookahead s (u32 (d_lookahead s - 1)) in
+    if z_avail_out z =? 0 then Some (inr (s, z, Some need_more)) else Some (inl (s, z)).
+
+Definition dsl_cand (s : dstate) (z : strm) : option ((dstate * strm) + dexit) :=
+    let s := set_d_match_available s 1 in
+    let s := set_d_strstart s (u32 (d_strstart s + 1)) in
+    Some (inl (set_d_lookahead s (u32 (d_lookahead s - 1)), z)).
+
+(** After the loop: the pending literal, s->insert, then FLUSH_BLOCK / the return value. *)
+Definition dsl_end (s : dstate) (z : strm) (flush : Z) : option (dstate * strm * bstate) :=
+    let* s :=
+      (if negb (d_match_available s =? 0) then
+         let* c := mb_rd (d_window s) (u32 (d_strstart s - 1)) in
+         let* (s, _) := c_dtally_lit s c in
+         Some (set_d_match_available s 0)
+       else Some s) in
+    c_deflate_tail (set_insert_end s) z flush.
+
+Lemma dsl_step_eq s z :
+  dsl_step s z =
+  let* s := dsl_pre s in
+  if (d_prev_length s >=? MIN_MATCH) && (d_match_length s <=? d_prev_length s) then dsl_match s z
+  else if negb (d_match_available s =? 0) then dsl_lit s z else dsl_cand s z.
+Proof.
+  unfold dsl_step, dsl_pre, dsl_match, dsl_lit, dsl_cand, bind.
+  destruct (c_insert_head s) as [[s1 h]|]; reflexivity.
+Qed.
+
+Lemma c_deflate_slow_eq s z flush :
+  c_deflate_slow s z flush =
+  let* (s, z, r) := loop FUEL (dsl_body flush) (s, z) in
+  match r with
+  | Some r => Some (s, z, r)
+  | None => dsl_end s z flush
+  end.
+Proof. unfold c_deflate_slow, dsl_end. reflexivity. Qed.
+
+(** ** What dsl_pre establishes (from the state [s] after the refill to [s1]) *)
+
+(** dsl_pre changes ins_h, prev, head (INSERT_STRING), prev_length, prev_match, match_length, match_start. *)
+Definition pre_keep (s : dstate) : dstate :=
+  set_d_match_start (set_d_match_length (set_d_prev_match (set_d_prev_length (hc_keep s) 0) 0) 0) 0.
+
+Definition MID (s s1 : dstate) : Prop :=
+  pre_keep s1 = pre_keep s /\ wstruct s1 /\
+  (exists G, chain_with s1 (d_strstart s + 1) (lim s) G) /\
+  d_prev_length s1 = d_match_length s /\ d_prev_match s1 = d_match_start s /\
+  0 <= d_match_length s1 <= MAX_MATCH /\
+  (MIN_MATCH <= d_match_length s1 ->
+     d_match_length s1 <= d_lookahead s /\
+     (d_prev_length s1 < d_match_length s1 ->
+        1 <= u32 (d_strstart s - d_match_start s1) <= MAX_DIST s /\
+        (d_match_length s1 = MIN_MATCH -> d_strategy s <> Z_FILTERED ->
+         u32 (d_strstart s - d_match_start s1) <= TOO_FAR))).
+
+(** ** The result of one iteration's step: go on with the invariant and a smaller measure, or return *)
+Definition step_ok (s0 : dstate) (z0 : strm) (flush : Z) (s : dstate) (z : strm)
+    (r : (dstate * strm) + dexit) : Prop :=
+  match r with
+  | inl (s', z') => exists evs', SI s0 z0 flush s' z' evs' /\ msr s' z' < msr s z
+  | inr (s', z', Some bs) => exists evs', cpost W2 s0 z0 flush s' z' bs evs'
+  | inr (_, _, None) => False
+  end.
+
+(** ** The parts *)
+
+(** The refill (fill_window). *)
+Definition refill_part : Prop :=
+  forall s0 z0 flush s z evs, SI s0 z0 flush s z evs ->
+  exists r, c_refill need_min_lookahead flush s z = Some r /\
+  match r with
+  | inl (s', z') => SI s0 z0 flush s' z' evs /\ rdy s' /\ msr s' z' <= msr s z
+  | inr (s', z', None) =>
+      SI s0 z0 flush s' z' evs /\ d_lookahead s' = 0 /\ z_avail_in z' = 0 /\ flush <> Z_NO_FLUSH /\
+      d_strstart s' + MIN_LOOKAHEAD <= d_window_size s'
+  | inr (s', z', Some bs) => exists evs', cpost W2 s0 z0 flush s' z' bs evs'
+  end.
+
+(** INSERT_STRING, longest_match and the filter. *)
+Definition pre_part : Prop :=
+  forall s0 z0 flush s z evs, SI s0 z0 flush s z evs -> rdy s ->
+  exists s1, dsl_pre s = Some s1 /\ MID s s1.
+
+(** The match branch (the previous match is emitted). *)
+Definition match_part : Prop :=
+  forall s0 z0 flush s z evs s1, SI s0 z0 flush s z evs -> rdy s -> MID s s1 ->
+  MIN_MATCH <= d_prev_length s1 -> d_match_length s1 <= d_prev_length s1 ->
+  exists r, dsl_match s1 z = Some r /\ step_ok s0 z0 flush s z r.
+
+(** The pending-literal branch. *)
+Definition lit_part : Prop :=
+  forall s0 z0 flush s z evs s1, SI s0 z0 flush s z evs -> rdy s -> MID s s1 ->
+  ~ (MIN_MATCH <= d_prev_length s1 /\ d_match_length s1 <= d_prev_length s1) -> d_match_available s1 <> 0 ->
+  exists r, dsl_lit s1 z = Some r /\ step_ok s0 z0 flush s z r.
+
+(** The new-candidate branch. *)
+Definition cand_part : Prop :=
+  forall s0 z0 flush s z evs s1, SI s0 z0 flush s z evs -> rdy s -> MID s s1 ->
+  ~ (MIN_MATCH <= d_prev_length s1 /\ d_match_length s1 <= d_prev_length s1) -> d_match_available s1 = 0 ->
+  exists r, dsl_cand s1 z = Some r /\ step_ok s0 z0 flush s z r.
+
+(** After the loop's break. *)
+Definition end_part : Prop :=
+  forall s0 z0 flush s z evs, SI s0 z0 flush s z evs ->
+  d_lookahead s = 0 -> z_avail_in z = 0 -> flush <> Z_NO_FLUSH ->
+  d_strstart s + MIN_LOOKAHEAD <= d_window_size s ->
+  exists s' z' bs evs', dsl_end s z flush = Some (s', z', bs) /\ cpost W2 s0 z0 flush s' z' bs evs'.
+
+(** FLUSH_BLOCK_ONLY as an event (shared by the match / literal branches and the end). *)
+Definition fboev_part : Prop :=
+  forall s0 z0 flush s z evs syms last,
+    EI s0 z0 flush s z evs -> fbo_pre s z syms last -> Forall (sym_ok s) syms ->
+    (last = 1 -> flush = Z_FINISH) ->
+    (last = 0 -> Zlength syms = d_L s - 1 \/ (flush <> Z_NO_FLUSH /\ flush <> Z_FINISH)) ->
+    (d_block_start s < 0 -> MAX_DIST s < d_strstart s - d_block_start s) ->
+    exists s' z' e,
+      c_flush_block_only s z last = Some (s', z') /\ ev_last e = last /\
+      EI s0 z0 flush s' z' (evs ++ [e]) /\
+      fbo_keep s' = fbo_keep s /\ d_block_start s' = d_strstart s /\
+      tree_ok (d_tr s') (d_pbm s') [] /\ tr_cfg (d_tr s') = tr_cfg (d_tr s) /\ d_matches s' = 0 /\
+      d_bi_valid s' <= 7 /\ (last = 1 -> d_bi_valid s' = 0) /\
+      (d_pending s' = 0 \/ z_avail_out z' = 0) /\ z_avail_in z' = z_avail_in z.
+
+(** ** Small proved facts *)
+
+Lemma EI_need_more s0 z0 flush s z evs :
+  W2 s -> Forall (fun e => ev_last e = 0) evs -> EI s0 z0 flush s z evs -> d_bi_valid s <= 7 ->
+  (flush = Z_NO_FLUSH \/ z_avail_out z = 0) ->
+  cpost W2 s0 z0 flush s z need_more evs.
+Proof.
+  intros HW HL (_ & _ & Ho & Hsp & Hapi & _ & _ & Hz & Hc & He) Hbv Hf.
+  unfold cpost. split; [exact HW|]. split; [exact Ho|]. split; [exact Hsp|]. split; [exact Hapi|].
+  split; [exact Hz|]. split; [exact Hc|]. split; [exact He|]. split; [exact HL|]. split; [exact Hbv|].
+  destruct Hf as [Hf|Hf]; auto.
+Qed.
+
+Lemma SI_need_more s0 z0 flush s z evs :
+  SI s0 z0 flush s z evs -> (flush = Z_NO_FLUSH \/ z_avail_out z = 0) ->
+  cpost W2 s0 z0 flush s z need_more evs.
+Proof. intros (HW & Hq & HL & HE) Hf. exact (EI_need_more s0 z0 flush s z evs HW HL HE (proj2 (proj2 Hq)) Hf). Qed.
+
+Lemma chain_with_mono s n l G n' l' :
+  chain_with s n l G -> n <= n' -> l <= l' -> chain_with s n' l' G.
+Proof.
+  intros (H1 & H2 & H3) Hn Hl. split; [|split; [exact H2|]].
+  - intros v Hv. destruct (H1 v Hv) as [E|E]; [left; exact E|right; lia].
+  - intros q Hq Hq0 Hlq. apply H3; [exact Hq|exact Hq0|lia].
+Qed.
+
+Lemma lim_mono s s' : d_w_size s' = d_w_size s -> d_strstart s <= d_strstart s' -> lim s <= lim s'.
+Proof.
+  intros Hw Hs. unfold lim, MAX_DIST. rewrite Hw.
+  destruct (Z.gtb_spec (d_strstart s) (d_w_size s - MIN_LOOKAHEAD));
+  destruct (Z.gtb_spec (d_strstart s') (d_w_size s - MIN_LOOKAHEAD)); lia.
+Qed.
+
+Lemma same_prm_refl s : same_prm s s.
+Proof. unfold same_prm. repeat split; reflexivity. Qed.
+
+Lemma api_eq_refl s : api_eq s s.
+Proof. unfold api_eq. repeat split; reflexivity. Qed.
+
+Lemma SI_init s z flush : compress_pre2 s z flush -> fn_of s = 2 -> SI s z flush s z [].
+Proof.
+  intros Hc Hf. pose proof Hc as (HW & Ho & Hq & Hfl & Hz & Hw & Ha).
+  split; [exact HW|]. split; [exact Hq|]. split; [constructor|].
+  split; [exact Hc|]. split; [exact Hf|]. split; [exact Ho|].
+  split; [apply same_prm_refl|]. split; [apply api_eq_refl|].
+  split; [apply zin_ok_zall; exact Hz|]. split; [exact Ha|].
+  split; [|split; [reflexivity|constructor]].
+  exists 0, []. split; [apply zstep_refl; [apply zin_ok_zall; exact Hz|exact Ha]|].
+  split; [constructor|]. cbn. lia.
+Qed.

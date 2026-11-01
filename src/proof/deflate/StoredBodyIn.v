@@ -1,0 +1,68 @@
+(** * deflate_stored's loop body, part (d): the copy from next_in to next_out,
+    [if (len) { read_buf(s->strm, s->strm->next_out, len); next_out += len; avail_out -= len; total_out += len; }]
+    (StoredBodyKit.S_in, model c_in).  read_buf_spec is on DRep.strm_in_at: split strm_at with
+    DRep.strm_at_split and frame strm_out_fields and the output space around the call. *)
+Require Import VST.floyd.proofauto.
+Require Import Zlib.proof.deflate.DCS.
+Require Import Zlib.proof.deflate.Arith.
+Require Import Zlib.proof.trees.TLemmas.
+Require Import Zlib.proof.deflate.StoredKit.
+Require Import Zlib.proof.deflate.StoredFacts.
+Require Import Zlib.proof.deflate.StoredBodyKit.
+Require Import Zlib.proof.deflate.StoredBodyInKit.
+
+#[export] Existing Instance DCS.CS.
+
+Open Scope cmodel_scope.
+
+Lemma sb_in_frag {Espec : OracleKind} (p : dptrs) (pin pout : val) (ish : share) (rest : list val)
+    (msgv : val) (gv : globals) (s : dstate) (z : strm) (flush min_block used len last : Z) (z' : strm) :
+  Int.min_signed <= flush <= Int.max_signed -> 0 <= min_block <= Int.max_unsigned ->
+  0 <= used <= Int.max_unsigned -> 0 <= len <= Int.max_unsigned -> 0 <= last <= 1 ->
+  c_in s z len = Some z' ->
+  semax Delta_ds
+    (PROP () LOCAL (temp _len (vi len); temp _last (vi last); temp _min_block (vi min_block);
+                    temp _used (vi used); gvars gv; temp _s (p_s p); temp _flush (vi flush))
+     SEP (dfull s z p pin pout ish rest msgv gv; deflate_globals gv))
+    S_in
+    (normal_ret_assert
+      (PROP () LOCAL (temp _last (vi last); temp _min_block (vi min_block);
+                      temp _used (vi used); gvars gv; temp _s (p_s p); temp _flush (vi flush))
+       SEP (dfull s z' p pin pout ish (rest_after z z' rest) msgv gv; deflate_globals gv))).
+Proof.
+  intros. show_frag.
+  unfold dfull at 1. Intros.
+  destruct (Z.eq_dec len 0) as [E|E].
+  { subst len. unfold c_in in H4. cbn in H4. injection H4 as <-. rewrite rest_after_same.
+    forward_if.
+    { contradiction. }
+    forward. unfold dfull. entailer!. }
+  destruct (c_in_some s z len z' H5 E H4) as (z1 & data & Er & Ed & Ha & Eo1 & Ea1 & Et1 & Em1 & -> & Hr').
+  forward_if.
+  2: { exfalso. match goal with Hx : Int.repr len = Int.zero |- _ =>
+         change Int.zero with (Int.repr 0) in Hx; apply repr_inj_unsigned in Hx; rep_lia end. }
+  unfold dstate_at at 1. rewrite sb_trees_at_split. unfold dtype_at at 1, stat_at at 1. Intros.
+  rewrite strm_at_split. unfold strm_out_fields at 1.
+  unfold deflate_globals at 1. Intros.
+  sep_apply (out_split z pout rest len ltac:(lia)). Intros.
+  assert (Hpo : isptr pout) by (match goal with Hx : field_compatible _ _ pout |- _ => apply Hx end).
+  forward. forward. forward.
+  forward_call (p_strm p, p_s p, pin, msgv, ish, z, s, len, offset_val (Zlength (z_out z)) pout, (z1, data), gv).
+  { cbn [snd]. rewrite Ed. cancel. }
+  { unfold dstate_ranges in H9; tauto. }
+  cbn [fst snd]. rewrite Ed.
+  forward. forward. forward. forward.
+  forward. forward. forward. forward.
+  forward. forward. forward. forward.
+  rewrite (rest_after_in z (in_res z1 (z_out z ++ data) (z_avail_out z - len) (u64 (z_total_out z + len))) rest data
+             eq_refl) by lia.
+  rewrite next_out_add, avail_out_sub, total_out_add by (auto; lia).
+  sep_apply (out_join z (in_res z1 (z_out z ++ data) (z_avail_out z - len) (u64 (z_total_out z + len)))
+               pout rest len data H12 H11 Ed ltac:(lia) eq_refl eq_refl).
+  unfold dfull, dstate_at, deflate_globals. rewrite sb_trees_at_split, strm_at_split.
+  unfold strm_out_fields, dtype_at at 1, stat_at at 1.
+  rewrite strm_in_at_res, in_obj_res.
+  cbn [z_out z_avail_out z_total_out z_msg in_res set_z_total_out set_z_avail_out set_z_out].
+  rewrite Zlength_app, Ed.
+  entailer!.
+Qed.

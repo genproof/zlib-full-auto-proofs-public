@@ -1,0 +1,336 @@
+(* inflate_fast (BodyF5.v): the four byte-copy loops from the window (F5Kit s_wloop1..4). *)
+Require Import VST.floyd.proofauto.
+Require Import VST.floyd.library.
+Require Zlib.units.Inflate.
+Require Import Zlib.inffast.code.
+Require Import Zlib.proof.inffast.F5Kit.
+#[local] Existing Instance Zlib.units.Inflate.CS.
+Local Open Scope logic.
+
+(* the model: one more byte from the window *)
+Lemma wl_copy_f_snoc: forall n w i ow,
+  copy_f (S n) w (SWin i) ow =
+  (fst (copy_f n w (SWin i) ow) ++ [Znth (i + Z.of_nat n) w], SWin (i + Z.of_nat (S n))).
+Proof.
+  induction n; intros w i ow.
+  - cbn. rewrite Z.add_0_r. reflexivity.
+  - change (copy_f (S (S n)) w (SWin i) ow) with (copy_f (S n) w (SWin (i + 1)) (ow ++ [Znth i w])).
+    rewrite IHn. f_equal; [do 3 f_equal; lia | f_equal; lia].
+Qed.
+
+Lemma wl_copy_snoc: forall w i k ow, 0 <= k ->
+  fst (copy_bytes w (SWin i) (k + 1) ow) = fst (copy_bytes w (SWin i) k ow) ++ [Znth (i + k) w].
+Proof.
+  intros. unfold copy_bytes. rewrite Z2Nat.inj_add by lia. rewrite Nat.add_1_r, wl_copy_f_snoc.
+  cbn [fst]. rewrite Z2Nat.id by lia. reflexivity.
+Qed.
+
+Lemma wl_copy_0: forall w i ow, fst (copy_bytes w (SWin i) 0 ow) = ow.
+Proof. reflexivity. Qed.
+
+Lemma wl_copy_len: forall w i k ow, 0 <= k -> Zlength (fst (copy_bytes w (SWin i) k ow)) = Zlength ow + k.
+Proof.
+  intros w i k ow H. pattern k. apply natlike_ind; [| | exact H].
+  - rewrite wl_copy_0. lia.
+  - intros x Hx IH. rewrite <- Z.add_1_r, wl_copy_snoc by lia. rewrite Zlength_app, Zlength_cons, Zlength_nil. lia.
+Qed.
+
+(* the memory: one more byte stored into the output *)
+Lemma wl_out_store: forall lo N c ow b,
+  0 <= lo -> lo + Zlength ow < N -> Zlength c = N ->
+  upd_Znth (lo + Zlength ow) (sublist 0 lo c ++ byte_vals ow ++ sublist (lo + Zlength ow) N c) (Vint (Int.repr b)) =
+  sublist 0 lo c ++ byte_vals (ow ++ [b]) ++ sublist (lo + Zlength (ow ++ [b])) N c.
+Proof.
+  intros. unfold byte_vals. rewrite map_app. cbn [map]. list_solve.
+Qed.
+
+Lemma wl_win_load: forall w r j, 0 <= j < Zlength w ->
+  Znth j (byte_vals w ++ Zrepeat Vundef r) = Vint (Int.repr (Znth j w)).
+Proof.
+  intros. rewrite Znth_app1 by (unfold byte_vals; rewrite Zlength_map; lia).
+  unfold byte_vals. rewrite Znth_map by lia. reflexivity.
+Qed.
+
+Lemma wl_add1: forall p a, isptr p ->
+  force_val (sem_binary_operation' Oadd (tptr tuchar) tint (offset_val a p) (Vint (Int.repr 1))) = offset_val (a + 1) p.
+Proof.
+  intros p a P. destruct p; try contradiction. simpl. f_equal.
+  rewrite Ptrofs.add_assoc. f_equal. unfold Ptrofs.of_ints. rewrite Int.signed_repr by rep_lia.
+  rewrite Ptrofs.mul_one. rewrite ptrofs_add_repr. reflexivity.
+Qed.
+
+Lemma wl_set_ow_id: forall m, set_m_ow m (m_ow m) = m.
+Proof. intros [] ; reflexivity. Qed.
+
+Lemma wl_rest_ow: forall F m ow, rest_mem F (set_m_ow m ow) = rest_mem F m.
+Proof. reflexivity. Qed.
+
+(* the temps and the memory of the loop at the machine with the output ow, the window present *)
+Ltac wl_norm EOB WIN :=
+  unfold fs_state, fs_locals, fs_sep; cbn [app]; rewrite ?wl_rest_ow;
+  cbn [m_s m_ow m_nx m_inp m_aout m_hold m_bits set_m_ow];
+  rewrite EOB; cbn [out_ptr out_rep]; unfold win_rep, win_val; rewrite WIN.
+
+(* the four loops differ only in their temporaries: one proof script, four copies *)
+Lemma wl1: wloop_stmt s_wloop1.
+Proof.
+  intros Espec F m i n L D FOK N1 I0 IN OW OOK.
+  pose proof (fast_ok_mwf _ FOK) as MW.
+  pose proof (mw_s _ MW) as SW.
+  destruct (sw_wdata _ SW) as [WL BW].
+  pose proof (sw_whave _ SW) as WH. pose proof (sw_wbits _ SW) as WB.
+  assert (WIN: i_win (m_s m) = true /\ i_wsize (m_s m) = 2 ^ i_wbits (m_s m))
+    by (destruct (sw_wsize _ SW); [lia | auto]).
+  destruct WIN as [WIN WSZ].
+  destruct (mw_ow _ MW) as [OWL BOW].
+  destruct (f_ob F) as [osh op lo on oc] eqn:EOB.
+  destruct OOK as (Wosh & Pop & Lo0 & Ao & Lon & Loc & Onmax).
+  assert (W23: 2 ^ i_wbits (m_s m) <= 2 ^ 23) by (apply Z.pow_le_mono_r; lia).
+  pose proof (Zlength_nonneg (m_ow m)) as How0.
+  stmt_simpl. abbreviate_semax.
+  forward_loop
+    (EX k: Z, fs_state F (set_m_ow m (fst (copy_bytes (i_wdata (m_s m)) (SWin i) k (m_ow m)))) [0 <= k < n]
+       [temp _op (zv (n - k)); temp _from (offset_val (i + k) (f_winp F)); temp _len (zv L); temp _dist (zv D)])
+    break:
+    (fs_state F (set_m_ow m (fst (copy_bytes (i_wdata (m_s m)) (SWin i) n (m_ow m)))) []
+       [temp _op (zv 0); temp _from (offset_val (i + n) (f_winp F)); temp _len (zv L); temp _dist (zv D)]).
+  - Exists 0. rewrite wl_copy_0, wl_set_ow_id, Z.sub_0_r, Z.add_0_r. unfold fs_state.
+    unfold PROPx at 2; apply andp_right; [apply prop_right; cbn; split; [lia | auto] |
+      apply andp_left2; unfold PROPx; apply andp_left2; apply derives_refl].
+  - Intros k. wl_norm EOB WIN. Intros.
+    pose proof (wl_copy_len (i_wdata (m_s m)) i k (m_ow m) ltac:(lia)) as LK.
+    abbreviate_semax.
+    set (w := i_wdata (m_s m)) in *.
+    set (owk := fst (copy_bytes w (SWin i) k (m_ow m))) in *.
+    set (wn := 2 ^ i_wbits (m_s m)) in *.
+    assert_PROP (field_compatible (tarray tuchar on) [] op) as FCo by entailer!.
+    assert_PROP (field_compatible (tarray tuchar wn) [] (f_winp F)) as FCw by entailer!.
+    assert (Pw: isptr (f_winp F)) by (destruct FCw; auto).
+    assert (BR: 0 <= Znth (i + k) w <= Byte.max_unsigned) by (apply (proj1 (Forall_Znth _ _) BW); lia).
+    assert (ZV: Znth (i + k) (byte_vals w ++ Zrepeat Vundef (wn - Zlength w)) = Vint (Int.repr (Znth (i + k) w)))
+      by (apply wl_win_load; lia).
+    forward. forward. forward. forward.
+    rewrite !wl_add1 by auto.
+    rewrite (offset_val_field_address_tuchar wn (i + k) (f_winp F)) by (auto; lia).
+    forward.
+    { setoid_rewrite ZV. entailer!. all: rep_lia. }
+    setoid_rewrite ZV.
+    rewrite (offset_val_field_address_tuchar on (lo + Zlength owk) op) by (auto; lia).
+    forward.
+    rewrite <- (offset_val_field_address_tuchar on (lo + Zlength owk) op) by (auto; lia).
+    rewrite zext8, Z.mod_small by rep_lia.
+    rewrite (out_rep_snoc osh op lo on oc owk (Znth (i + k) w)) by lia.
+    replace (owk ++ [Znth (i + k) w]) with (fst (copy_bytes w (SWin i) (k + 1) (m_ow m)))
+      by (unfold owk; rewrite wl_copy_snoc by lia; reflexivity).
+    forward. forward.
+    forward_if.
+    + forward. Exists (k + 1). wl_norm EOB WIN. unfold out_rep. entailer!.
+      match goal with Hn: Int.unsigned (Int.repr (n - k)) - Int.unsigned (Int.repr 1) <> 0 |- _ =>
+        rewrite !Int.unsigned_repr in Hn by rep_lia end.
+      rewrite wl_copy_len by lia.
+      split; [lia | ]. split; [f_equal; f_equal; lia | ]. split; f_equal; lia.
+    + assert (E: n = k + 1).
+      { match goal with Hn: Int.sub (Int.repr (n - k)) (Int.repr 1) = Int.zero |- _ =>
+          rewrite sub_repr in Hn; apply repr_inj_unsigned in Hn; rep_lia end. }
+      subst n. forward. wl_norm EOB WIN. unfold out_rep. entailer!.
+      rewrite wl_copy_len by lia.
+      split; [f_equal; f_equal; lia | ]. split; f_equal; lia.
+Qed.
+
+Lemma wl2: wloop_stmt s_wloop2.
+Proof.
+  intros Espec F m i n L D FOK N1 I0 IN OW OOK.
+  pose proof (fast_ok_mwf _ FOK) as MW.
+  pose proof (mw_s _ MW) as SW.
+  destruct (sw_wdata _ SW) as [WL BW].
+  pose proof (sw_whave _ SW) as WH. pose proof (sw_wbits _ SW) as WB.
+  assert (WIN: i_win (m_s m) = true /\ i_wsize (m_s m) = 2 ^ i_wbits (m_s m))
+    by (destruct (sw_wsize _ SW); [lia | auto]).
+  destruct WIN as [WIN WSZ].
+  destruct (mw_ow _ MW) as [OWL BOW].
+  destruct (f_ob F) as [osh op lo on oc] eqn:EOB.
+  destruct OOK as (Wosh & Pop & Lo0 & Ao & Lon & Loc & Onmax).
+  assert (W23: 2 ^ i_wbits (m_s m) <= 2 ^ 23) by (apply Z.pow_le_mono_r; lia).
+  pose proof (Zlength_nonneg (m_ow m)) as How0.
+  stmt_simpl. abbreviate_semax.
+  forward_loop
+    (EX k: Z, fs_state F (set_m_ow m (fst (copy_bytes (i_wdata (m_s m)) (SWin i) k (m_ow m)))) [0 <= k < n]
+       [temp _op (zv (n - k)); temp _from (offset_val (i + k) (f_winp F)); temp _len (zv L); temp _dist (zv D)])
+    break:
+    (fs_state F (set_m_ow m (fst (copy_bytes (i_wdata (m_s m)) (SWin i) n (m_ow m)))) []
+       [temp _op (zv 0); temp _from (offset_val (i + n) (f_winp F)); temp _len (zv L); temp _dist (zv D)]).
+  - Exists 0. rewrite wl_copy_0, wl_set_ow_id, Z.sub_0_r, Z.add_0_r. unfold fs_state.
+    unfold PROPx at 2; apply andp_right; [apply prop_right; cbn; split; [lia | auto] |
+      apply andp_left2; unfold PROPx; apply andp_left2; apply derives_refl].
+  - Intros k. wl_norm EOB WIN. Intros.
+    pose proof (wl_copy_len (i_wdata (m_s m)) i k (m_ow m) ltac:(lia)) as LK.
+    abbreviate_semax.
+    set (w := i_wdata (m_s m)) in *.
+    set (owk := fst (copy_bytes w (SWin i) k (m_ow m))) in *.
+    set (wn := 2 ^ i_wbits (m_s m)) in *.
+    assert_PROP (field_compatible (tarray tuchar on) [] op) as FCo by entailer!.
+    assert_PROP (field_compatible (tarray tuchar wn) [] (f_winp F)) as FCw by entailer!.
+    assert (Pw: isptr (f_winp F)) by (destruct FCw; auto).
+    assert (BR: 0 <= Znth (i + k) w <= Byte.max_unsigned) by (apply (proj1 (Forall_Znth _ _) BW); lia).
+    assert (ZV: Znth (i + k) (byte_vals w ++ Zrepeat Vundef (wn - Zlength w)) = Vint (Int.repr (Znth (i + k) w)))
+      by (apply wl_win_load; lia).
+    forward. forward. forward. forward.
+    rewrite !wl_add1 by auto.
+    rewrite (offset_val_field_address_tuchar wn (i + k) (f_winp F)) by (auto; lia).
+    forward.
+    { setoid_rewrite ZV. entailer!. all: rep_lia. }
+    setoid_rewrite ZV.
+    rewrite (offset_val_field_address_tuchar on (lo + Zlength owk) op) by (auto; lia).
+    forward.
+    rewrite <- (offset_val_field_address_tuchar on (lo + Zlength owk) op) by (auto; lia).
+    rewrite zext8, Z.mod_small by rep_lia.
+    rewrite (out_rep_snoc osh op lo on oc owk (Znth (i + k) w)) by lia.
+    replace (owk ++ [Znth (i + k) w]) with (fst (copy_bytes w (SWin i) (k + 1) (m_ow m)))
+      by (unfold owk; rewrite wl_copy_snoc by lia; reflexivity).
+    forward. forward.
+    forward_if.
+    + forward. Exists (k + 1). wl_norm EOB WIN. unfold out_rep. entailer!.
+      match goal with Hn: Int.unsigned (Int.repr (n - k)) - Int.unsigned (Int.repr 1) <> 0 |- _ =>
+        rewrite !Int.unsigned_repr in Hn by rep_lia end.
+      rewrite wl_copy_len by lia.
+      split; [lia | ]. split; [f_equal; f_equal; lia | ]. split; f_equal; lia.
+    + assert (E: n = k + 1).
+      { match goal with Hn: Int.sub (Int.repr (n - k)) (Int.repr 1) = Int.zero |- _ =>
+          rewrite sub_repr in Hn; apply repr_inj_unsigned in Hn; rep_lia end. }
+      subst n. forward. wl_norm EOB WIN. unfold out_rep. entailer!.
+      rewrite wl_copy_len by lia.
+      split; [f_equal; f_equal; lia | ]. split; f_equal; lia.
+Qed.
+
+Lemma wl3: wloop_stmt s_wloop3.
+Proof.
+  intros Espec F m i n L D FOK N1 I0 IN OW OOK.
+  pose proof (fast_ok_mwf _ FOK) as MW.
+  pose proof (mw_s _ MW) as SW.
+  destruct (sw_wdata _ SW) as [WL BW].
+  pose proof (sw_whave _ SW) as WH. pose proof (sw_wbits _ SW) as WB.
+  assert (WIN: i_win (m_s m) = true /\ i_wsize (m_s m) = 2 ^ i_wbits (m_s m))
+    by (destruct (sw_wsize _ SW); [lia | auto]).
+  destruct WIN as [WIN WSZ].
+  destruct (mw_ow _ MW) as [OWL BOW].
+  destruct (f_ob F) as [osh op lo on oc] eqn:EOB.
+  destruct OOK as (Wosh & Pop & Lo0 & Ao & Lon & Loc & Onmax).
+  assert (W23: 2 ^ i_wbits (m_s m) <= 2 ^ 23) by (apply Z.pow_le_mono_r; lia).
+  pose proof (Zlength_nonneg (m_ow m)) as How0.
+  stmt_simpl. abbreviate_semax.
+  forward_loop
+    (EX k: Z, fs_state F (set_m_ow m (fst (copy_bytes (i_wdata (m_s m)) (SWin i) k (m_ow m)))) [0 <= k < n]
+       [temp _op (zv (n - k)); temp _from (offset_val (i + k) (f_winp F)); temp _len (zv L); temp _dist (zv D)])
+    break:
+    (fs_state F (set_m_ow m (fst (copy_bytes (i_wdata (m_s m)) (SWin i) n (m_ow m)))) []
+       [temp _op (zv 0); temp _from (offset_val (i + n) (f_winp F)); temp _len (zv L); temp _dist (zv D)]).
+  - Exists 0. rewrite wl_copy_0, wl_set_ow_id, Z.sub_0_r, Z.add_0_r. unfold fs_state.
+    unfold PROPx at 2; apply andp_right; [apply prop_right; cbn; split; [lia | auto] |
+      apply andp_left2; unfold PROPx; apply andp_left2; apply derives_refl].
+  - Intros k. wl_norm EOB WIN. Intros.
+    pose proof (wl_copy_len (i_wdata (m_s m)) i k (m_ow m) ltac:(lia)) as LK.
+    abbreviate_semax.
+    set (w := i_wdata (m_s m)) in *.
+    set (owk := fst (copy_bytes w (SWin i) k (m_ow m))) in *.
+    set (wn := 2 ^ i_wbits (m_s m)) in *.
+    assert_PROP (field_compatible (tarray tuchar on) [] op) as FCo by entailer!.
+    assert_PROP (field_compatible (tarray tuchar wn) [] (f_winp F)) as FCw by entailer!.
+    assert (Pw: isptr (f_winp F)) by (destruct FCw; auto).
+    assert (BR: 0 <= Znth (i + k) w <= Byte.max_unsigned) by (apply (proj1 (Forall_Znth _ _) BW); lia).
+    assert (ZV: Znth (i + k) (byte_vals w ++ Zrepeat Vundef (wn - Zlength w)) = Vint (Int.repr (Znth (i + k) w)))
+      by (apply wl_win_load; lia).
+    forward. forward. forward. forward.
+    rewrite !wl_add1 by auto.
+    rewrite (offset_val_field_address_tuchar wn (i + k) (f_winp F)) by (auto; lia).
+    forward.
+    { setoid_rewrite ZV. entailer!. all: rep_lia. }
+    setoid_rewrite ZV.
+    rewrite (offset_val_field_address_tuchar on (lo + Zlength owk) op) by (auto; lia).
+    forward.
+    rewrite <- (offset_val_field_address_tuchar on (lo + Zlength owk) op) by (auto; lia).
+    rewrite zext8, Z.mod_small by rep_lia.
+    rewrite (out_rep_snoc osh op lo on oc owk (Znth (i + k) w)) by lia.
+    replace (owk ++ [Znth (i + k) w]) with (fst (copy_bytes w (SWin i) (k + 1) (m_ow m)))
+      by (unfold owk; rewrite wl_copy_snoc by lia; reflexivity).
+    forward. forward.
+    forward_if.
+    + forward. Exists (k + 1). wl_norm EOB WIN. unfold out_rep. entailer!.
+      match goal with Hn: Int.unsigned (Int.repr (n - k)) - Int.unsigned (Int.repr 1) <> 0 |- _ =>
+        rewrite !Int.unsigned_repr in Hn by rep_lia end.
+      rewrite wl_copy_len by lia.
+      split; [lia | ]. split; [f_equal; f_equal; lia | ]. split; f_equal; lia.
+    + assert (E: n = k + 1).
+      { match goal with Hn: Int.sub (Int.repr (n - k)) (Int.repr 1) = Int.zero |- _ =>
+          rewrite sub_repr in Hn; apply repr_inj_unsigned in Hn; rep_lia end. }
+      subst n. forward. wl_norm EOB WIN. unfold out_rep. entailer!.
+      rewrite wl_copy_len by lia.
+      split; [f_equal; f_equal; lia | ]. split; f_equal; lia.
+Qed.
+
+Lemma wl4: wloop_stmt s_wloop4.
+Proof.
+  intros Espec F m i n L D FOK N1 I0 IN OW OOK.
+  pose proof (fast_ok_mwf _ FOK) as MW.
+  pose proof (mw_s _ MW) as SW.
+  destruct (sw_wdata _ SW) as [WL BW].
+  pose proof (sw_whave _ SW) as WH. pose proof (sw_wbits _ SW) as WB.
+  assert (WIN: i_win (m_s m) = true /\ i_wsize (m_s m) = 2 ^ i_wbits (m_s m))
+    by (destruct (sw_wsize _ SW); [lia | auto]).
+  destruct WIN as [WIN WSZ].
+  destruct (mw_ow _ MW) as [OWL BOW].
+  destruct (f_ob F) as [osh op lo on oc] eqn:EOB.
+  destruct OOK as (Wosh & Pop & Lo0 & Ao & Lon & Loc & Onmax).
+  assert (W23: 2 ^ i_wbits (m_s m) <= 2 ^ 23) by (apply Z.pow_le_mono_r; lia).
+  pose proof (Zlength_nonneg (m_ow m)) as How0.
+  stmt_simpl. abbreviate_semax.
+  forward_loop
+    (EX k: Z, fs_state F (set_m_ow m (fst (copy_bytes (i_wdata (m_s m)) (SWin i) k (m_ow m)))) [0 <= k < n]
+       [temp _op (zv (n - k)); temp _from (offset_val (i + k) (f_winp F)); temp _len (zv L); temp _dist (zv D)])
+    break:
+    (fs_state F (set_m_ow m (fst (copy_bytes (i_wdata (m_s m)) (SWin i) n (m_ow m)))) []
+       [temp _op (zv 0); temp _from (offset_val (i + n) (f_winp F)); temp _len (zv L); temp _dist (zv D)]).
+  - Exists 0. rewrite wl_copy_0, wl_set_ow_id, Z.sub_0_r, Z.add_0_r. unfold fs_state.
+    unfold PROPx at 2; apply andp_right; [apply prop_right; cbn; split; [lia | auto] |
+      apply andp_left2; unfold PROPx; apply andp_left2; apply derives_refl].
+  - Intros k. wl_norm EOB WIN. Intros.
+    pose proof (wl_copy_len (i_wdata (m_s m)) i k (m_ow m) ltac:(lia)) as LK.
+    abbreviate_semax.
+    set (w := i_wdata (m_s m)) in *.
+    set (owk := fst (copy_bytes w (SWin i) k (m_ow m))) in *.
+    set (wn := 2 ^ i_wbits (m_s m)) in *.
+    assert_PROP (field_compatible (tarray tuchar on) [] op) as FCo by entailer!.
+    assert_PROP (field_compatible (tarray tuchar wn) [] (f_winp F)) as FCw by entailer!.
+    assert (Pw: isptr (f_winp F)) by (destruct FCw; auto).
+    assert (BR: 0 <= Znth (i + k) w <= Byte.max_unsigned) by (apply (proj1 (Forall_Znth _ _) BW); lia).
+    assert (ZV: Znth (i + k) (byte_vals w ++ Zrepeat Vundef (wn - Zlength w)) = Vint (Int.repr (Znth (i + k) w)))
+      by (apply wl_win_load; lia).
+    forward. forward. forward. forward.
+    rewrite !wl_add1 by auto.
+    rewrite (offset_val_field_address_tuchar wn (i + k) (f_winp F)) by (auto; lia).
+    forward.
+    { setoid_rewrite ZV. entailer!. all: rep_lia. }
+    setoid_rewrite ZV.
+    rewrite (offset_val_field_address_tuchar on (lo + Zlength owk) op) by (auto; lia).
+    forward.
+    rewrite <- (offset_val_field_address_tuchar on (lo + Zlength owk) op) by (auto; lia).
+    rewrite zext8, Z.mod_small by rep_lia.
+    rewrite (out_rep_snoc osh op lo on oc owk (Znth (i + k) w)) by lia.
+    replace (owk ++ [Znth (i + k) w]) with (fst (copy_bytes w (SWin i) (k + 1) (m_ow m)))
+      by (unfold owk; rewrite wl_copy_snoc by lia; reflexivity).
+    forward. forward.
+    forward_if.
+    + forward. Exists (k + 1). wl_norm EOB WIN. unfold out_rep. entailer!.
+      match goal with Hn: Int.unsigned (Int.repr (n - k)) - Int.unsigned (Int.repr 1) <> 0 |- _ =>
+        rewrite !Int.unsigned_repr in Hn by rep_lia end.
+      rewrite wl_copy_len by lia.
+      split; [lia | ]. split; [f_equal; f_equal; lia | ]. split; f_equal; lia.
+    + assert (E: n = k + 1).
+      { match goal with Hn: Int.sub (Int.repr (n - k)) (Int.repr 1) = Int.zero |- _ =>
+          rewrite sub_repr in Hn; apply repr_inj_unsigned in Hn; rep_lia end. }
+      subst n. forward. wl_norm EOB WIN. unfold out_rep. entailer!.
+      rewrite wl_copy_len by lia.
+      split; [f_equal; f_equal; lia | ]. split; f_equal; lia.
+Qed.
+
+Lemma f5_wloops : wloop_stmt s_wloop1 /\ wloop_stmt s_wloop2 /\ wloop_stmt s_wloop3 /\ wloop_stmt s_wloop4.
+Proof. exact (conj wl1 (conj wl2 (conj wl3 wl4))). Qed.

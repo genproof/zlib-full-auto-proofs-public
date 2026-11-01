@@ -1,0 +1,211 @@
+(* RT-D part STORED: the second-phase refill ds_fill2 (statement: RTDStoredKit.v). *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.roundtrip.RTDStoredKit.
+Require Import Zlib.proof.roundtrip.RTDLTCStoredFill.
+Require Import Zlib.proof.roundtrip.RTDLTCStoredChain.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+(** ** Values of the window after mb_write / mb_move *)
+
+Lemma rtdsf_write_val b lo src b' :
+  mb_write b lo src = Some b' ->
+  Zlength (mb_val b') = Zlength (mb_val b) /\
+  forall i, 0 <= i < Zlength (mb_val b) ->
+    Znth i (mb_val b') = if (i <? lo) || (lo + Zlength src <=? i) then Znth i (mb_val b) else Znth (i - lo) src.
+Proof.
+  unfold mb_write. destruct ((0 <=? lo) && (lo + Zlength src <=? Zlength (mb_val b))) eqn:C; [|discriminate].
+  apply andb_true_iff in C. destruct C as [C1 C2]. apply Z.leb_le in C1. apply Z.leb_le in C2.
+  intros E. injection E as <-. cbn [mb_val]. pose proof (Zlength_nonneg src).
+  split.
+  - rewrite !Zlength_app, !Zlength_sublist by lia. lia.
+  - intros i Hi. apply Znth_splice; lia.
+Qed.
+
+Lemma rtdsf_move_val b w n b' :
+  Zlength (mb_val b) = 2 * w -> 0 <= n <= w -> mb_move b 0 w n = Some b' ->
+  Zlength (mb_val b') = Zlength (mb_val b) /\
+  forall i, 0 <= i < n -> Znth i (mb_val b') = Znth (i + w) (mb_val b).
+Proof.
+  intros HL Hn. unfold mb_move.
+  destruct ((0 + n <=? w) || (w + n <=? 0)); cbn [guard bind]; [|discriminate].
+  unfold mb_read. destruct ((0 <=? n) && mb_definedb b w (w + n)); cbn [bind]; [|discriminate].
+  intros E. destruct (rtdsf_write_val _ _ _ _ E) as [L V].
+  assert (Ls : Zlength (sublist w (w + n) (mb_val b)) = n) by (rewrite Zlength_sublist; lia).
+  split; [exact L|]. intros i Hi. rewrite V by lia. rewrite Ls.
+  replace ((i <? 0) || (0 + n <=? i)) with false.
+  - rewrite Znth_sublist by lia. f_equal; lia.
+  - symmetry. apply orb_false_iff. split; [apply Z.ltb_ge|apply Z.leb_gt]; lia.
+Qed.
+
+(** ** The slide *)
+Lemma rtdsf_slide_val s z h s1 h1 :
+  W s -> d_level s = 0 -> fill_slide s z h = Some (s1, h1) ->
+  win_keep s1 = win_keep s /\
+  ((s1 = s) \/
+   (d_w_size s <= d_strstart s /\ d_strstart s1 = d_strstart s - d_w_size s /\
+    (forall i, 0 <= i < d_strstart s1 ->
+       Znth i (mb_val (d_window s1)) = Znth (i + d_w_size s) (mb_val (d_window s))) /\
+    d_matches s1 = if d_matches s <? 2 then u32 (d_matches s + 1) else d_matches s)).
+Proof.
+  intros HW L0 E. pose proof HW as HW0.
+  destruct HW0 as (Hp & Hs & Hpos & Hwin & Hwh & Hm & Hl & _).
+  pose proof (w_bounds s Hp) as Wb. destruct (Hl L0) as [La Lb].
+  destruct Hs as (Hs1 & Hs2 & Hs3 & Hs4 & Hs5).
+  destruct Hpos as (P1 & P2 & P3 & P4 & P5 & P6 & P7 & P8 & P9).
+  unfold fill_slide in E.
+  destruct ((z_avail_in z >? h) && (d_block_start s >=? d_w_size s)) eqn:C.
+  2:{ injection E as <- _. split; [reflexivity|left; reflexivity]. }
+  apply andb_true_iff in C. destruct C as [_ C]. apply Z.geb_le in C.
+  cbv zeta in E.
+  change (d_strstart (set_d_block_start s (d_block_start s - d_w_size s))) with (d_strstart s) in E.
+  change (d_w_size (set_d_block_start s (d_block_start s - d_w_size s))) with (d_w_size s) in E.
+  remember (set_d_strstart (set_d_block_start s (d_block_start s - d_w_size s))
+              (u32 (d_strstart s - d_w_size s))) as sb eqn:Esb.
+  assert (Sw : d_window sb = d_window s) by (subst sb; reflexivity).
+  assert (Sws : d_w_size sb = d_w_size s) by (subst sb; reflexivity).
+  assert (Sss : d_strstart sb = d_strstart s - d_w_size s)
+    by (subst sb; apply u32_id'; lia).
+  assert (Sm : d_matches sb = d_matches s) by (subst sb; reflexivity).
+  assert (Sk : win_keep sb = win_keep s) by (subst sb; rewrite wk_strstart, wk_block_start; reflexivity).
+  rewrite Sw, Sws, Sss in E.
+  destruct (mb_move (d_window s) 0 (d_w_size s) (d_strstart s - d_w_size s)) as [win|] eqn:Em;
+    cbn [bind] in E; [|discriminate].
+  destruct (rtdsf_move_val (d_window s) (d_w_size s) (d_strstart s - d_w_size s) win Hs1 ltac:(lia) Em) as [_ MV].
+  injection E as <- _.
+  destruct (incr_pj (set_d_window sb win)) as (I1 & I2 & I3 & I4 & I5 & I6).
+  destruct (clamp_pj (incr_matches (set_d_window sb win))) as (C1 & C2 & C3 & C4 & C5 & C6).
+  split; [rewrite wk_clamp, wk_incr, wk_window; exact Sk|]. right.
+  rewrite C1, I1, C2, I2, C6, I6. cbn [d_window d_strstart].
+  change (d_strstart (set_d_window sb win)) with (d_strstart sb).
+  change (d_window (set_d_window sb win)) with win.
+  change (d_matches (set_d_window sb win)) with (d_matches sb).
+  rewrite Sss, Sm. split; [lia|]. split; [reflexivity|]. split; [|reflexivity].
+  intros i Hi. apply MV. lia.
+Qed.
+
+(** ** The read *)
+Lemma rtdsf_read_val s1 z k s2 z2 :
+  zall z -> adler_ok (d_wrap s1) (z_adler z) -> 0 <= k <= z_avail_in z -> 0 <= d_strstart s1 ->
+  d_strstart s1 + k < 4294967296 ->
+  fill_read s1 z k = Some (s2, z2) ->
+  win_keep s2 = win_keep s1 /\ d_matches s2 = d_matches s1 /\ d_strstart s2 = d_strstart s1 + k /\
+  zstep (d_wrap s1) z z2 k [] /\
+  (forall i, 0 <= i < d_strstart s1 -> Znth i (mb_val (d_window s2)) = Znth i (mb_val (d_window s1))) /\
+  (forall i, d_strstart s1 <= i < d_strstart s1 + k ->
+     Znth i (mb_val (d_window s2)) = Znth (i - d_strstart s1) (sublist (z_next_in z) (z_next_in z + k) (z_in z))).
+Proof.
+  intros Hz Ha Hk H0 Hb E. unfold fill_read in E.
+  destruct (Z.eqb_spec k 0) as [K0|K0].
+  - subst k. injection E as <- <-. split; [reflexivity|]. split; [reflexivity|]. split; [lia|].
+    split; [apply zstep_refl; auto|]. split; [auto|]. intros i Hi; lia.
+  - destruct (read_buf_ok s1 z k Hz Ha ltac:(lia)) as (z3 & Er & Hzs & _).
+    replace (Z.min k (z_avail_in z)) with k in * by lia. rewrite Er in E. cbn [bind] in E.
+    set (data := sublist (z_next_in z) (z_next_in z + k) (z_in z)) in *.
+    assert (Ld : Zlength data = k).
+    { unfold data. destruct Hz as [(Hb' & Hni & Hai & Hl' & Ht) _]. rewrite Zlength_sublist; lia. }
+    destruct (mb_write (d_window s1) (d_strstart s1) data) as [win|] eqn:Ew; cbn [bind] in E; [|discriminate].
+    destruct (rtdsf_write_val _ _ _ _ Ew) as [WL WV].
+    change (d_strstart (set_d_window s1 win)) with (d_strstart s1) in E.
+    rewrite (u32_id' (d_strstart s1 + k)) in E by lia.
+    injection E as <- <-.
+    split; [rewrite wk_add, wk_strstart, wk_window; reflexivity|].
+    split; [reflexivity|]. split; [reflexivity|]. split; [exact Hzs|].
+    change (d_window (add_insert (set_d_strstart (set_d_window s1 win) (d_strstart s1 + k)) k)) with win.
+    assert (Hwl : d_strstart s1 + k <= Zlength (mb_val (d_window s1))).
+    { unfold mb_write in Ew. destruct (_ && _) eqn:C; [|discriminate]. apply andb_true_iff in C.
+      destruct C as [_ C]. apply Z.leb_le in C. lia. }
+    split.
+    + intros i Hi. rewrite WV by lia. replace (i <? d_strstart s1) with true by (symmetry; apply Z.ltb_lt; lia).
+      reflexivity.
+    + intros i Hi. rewrite WV by lia. rewrite Ld.
+      replace ((i <? d_strstart s1) || (d_strstart s1 + k <=? i)) with false; [reflexivity|].
+      symmetry. apply orb_false_iff. split; [apply Z.ltb_ge|apply Z.leb_gt]; lia.
+Qed.
+
+Theorem rtds_fill_ok : chainh_stmt -> ffill2_stmt.
+Proof.
+  intros [CH1 [CH2 CH3]] s z s' z' k H HW L0 Hz Ha HK Hzs Hkw Hkh.
+  specialize (HK _ (fun s z => Some (s, z))). rewrite ds_fill2_eq in HK.
+  pose proof HW as HW0. destruct HW0 as (Hp & Hs & Hpos & _ & _ & _ & Hl & _).
+  pose proof (w_bounds s Hp) as Wb. pose proof Hs as Hs0. destruct Hs0 as (Hs1 & Hs2 & Hs3 & Hs4 & Hs5).
+  destruct Hpos as (P1 & P2 & P3 & P4 & P5 & P6 & P7 & P8 & P9). destruct (Hl L0) as [La Lb].
+  assert (Eh : u32 (u64 (d_window_size s - d_strstart s)) = 2 * d_w_size s - d_strstart s).
+  { rewrite Hs3. rewrite u64_id by lia. apply u32_id'. lia. }
+  rewrite Eh in HK.
+  destruct (slide_ok s z _ chain_parts_ok HW L0 eq_refl) as (s1 & Es & HW1 & Hk1 & Hu1 & Hw1).
+  destruct (rtdsf_slide_val s z _ s1 _ HW L0 Es) as [_ Hsl].
+  rewrite Es in HK. cbn [bind] in HK.
+  assert (L1 : d_level s1 = 0) by (rewrite (wk_level _ _ Hk1); exact L0).
+  assert (Wr : d_wrap s1 = d_wrap s) by exact (f_equal d_wrap Hk1).
+  pose proof HW1 as HW10. destruct HW10 as (_ & Hs' & Hpos' & _).
+  destruct Hs' as (_ & _ & Hs3' & _). destruct Hpos' as (Q1 & Q2 & Q3 & _).
+  assert (La1 : d_lookahead s1 = d_lookahead s) by exact (f_equal d_lookahead Hk1).
+  set (k0 := if 2 * d_w_size s - d_strstart s1 >? z_avail_in z then z_avail_in z
+             else 2 * d_w_size s - d_strstart s1) in HK.
+  pose proof Hz as Hz0. destruct Hz0 as [(Hb & Hni & Hai & Hlz & _) _].
+  assert (Hk0 : 0 <= k0 <= z_avail_in z /\ d_strstart s1 + k0 <= 2 * d_w_size s).
+  { unfold k0. destruct (Z.gtb_spec (2 * d_w_size s - d_strstart s1) (z_avail_in z)); lia. }
+  destruct (fill_read s1 z k0) as [[s2 z2]|] eqn:Er; cbn [bind] in HK; [|discriminate].
+  injection HK as <- <-.
+  destruct (rtdsf_read_val s1 z k0 s2 z2 Hz ltac:(rewrite Wr; exact Ha) ltac:(lia) ltac:(lia) ltac:(lia) Er)
+    as (Hk2 & Hm2 & Hss2 & Hzs2 & V1 & V2).
+  destruct (hw_pj s2) as (H1 & H2 & H3 & H4 & H5 & H6).
+  assert (Ek : k = k0).
+  { destruct Hzs as (_ & _ & N1 & _). destruct Hzs2 as (_ & _ & N2 & _). lia. }
+  subst k.
+  assert (Hk' : win_keep (upd_high_water s2) = win_keep s) by (rewrite wk_hw, Hk2; exact Hk1).
+  assert (La' : d_lookahead (upd_high_water s2) = d_lookahead s) by exact (f_equal d_lookahead Hk').
+  assert (L' : d_level (upd_high_water s2) = 0) by (rewrite (wk_level _ _ Hk'); exact L0).
+  set (data := sublist (z_next_in z) (z_next_in z + k0) (z_in z)) in *.
+  assert (Ld : Zlength data = k0) by (unfold data; rewrite Zlength_sublist; lia).
+  (* the window of s1 from the one of s: a shift by d (0 or w_size) *)
+  assert (Hd : exists d, d_strstart s1 = d_strstart s - d /\ 0 <= d /\
+     forall i, 0 <= i < d_strstart s1 -> Znth i (mb_val (d_window s1)) = Znth (i + d) (mb_val (d_window s))).
+  { destruct Hsl as [->|(S1 & S2 & S3 & _)].
+    - exists 0. split; [lia|]. split; [lia|]. intros i _. f_equal; lia.
+    - exists (d_w_size s). split; [exact S2|]. split; [lia|]. exact S3. }
+  destruct Hd as (d & Ed & Hd0 & Vd).
+  split.
+  - destruct Hkw as [Hkw1 Hkw2]. unfold kwin. rewrite La', H1, H2, Hss2, Zlength_app, Ld. rewrite La in *.
+    split; [lia|]. intros i Hi.
+    destruct (Z_lt_le_dec i (d_strstart s1)).
+    + rewrite V1 by lia. rewrite Vd by lia. rewrite Hkw2 by lia. rewrite app_Znth1 by lia. f_equal; lia.
+    + rewrite V2 by lia. rewrite app_Znth2 by lia. f_equal; lia.
+  - assert (Wv : forall i, 0 <= i < d_strstart s1 + d_lookahead s1 ->
+       Znth i (mb_val (d_window (upd_high_water s2))) = Znth i (mb_val (d_window s1))).
+    { intros i Hi. rewrite H2. apply V1. lia. }
+    assert (Ess : d_strstart s1 <= d_strstart (upd_high_water s2)) by (rewrite H1, Hss2; lia).
+    assert (Ela : d_strstart s1 + d_lookahead s1 <= d_strstart (upd_high_water s2) + d_lookahead (upd_high_water s2))
+      by (rewrite H1, Hss2, La', La1; lia).
+    assert (G1 : d_head (upd_high_water s2) = d_head s1) by exact (f_equal d_head (eq_trans Hk' (eq_sym Hk1))).
+    assert (G2 : d_prev (upd_high_water s2) = d_prev s1) by exact (f_equal d_prev (eq_trans Hk' (eq_sym Hk1))).
+    assert (G3 : d_w_size (upd_high_water s2) = d_w_size s1) by exact (f_equal d_w_size (eq_trans Hk' (eq_sym Hk1))).
+    assert (G4 : d_w_mask (upd_high_water s2) = d_w_mask s1) by exact (f_equal d_w_mask (eq_trans Hk' (eq_sym Hk1))).
+    assert (G5 : d_hash_size (upd_high_water s2) = d_hash_size s1)
+      by exact (f_equal d_hash_size (eq_trans Hk' (eq_sym Hk1))).
+    assert (G6 : d_hash_shift (upd_high_water s2) = d_hash_shift s1)
+      by exact (f_equal d_hash_shift (eq_trans Hk' (eq_sym Hk1))).
+    assert (G7 : d_hash_mask (upd_high_water s2) = d_hash_mask s1)
+      by exact (f_equal d_hash_mask (eq_trans Hk' (eq_sym Hk1))).
+    assert (Em' : d_matches (upd_high_water s2) = d_matches s1) by (rewrite H6; exact Hm2).
+    destruct Hkh as [Hkh _]. rewrite L0, Z.eqb_refl in Hkh.
+    unfold khash. rewrite L', Z.eqb_refl. split.
+    2:{ intros [F|F]; unfold fn_of in F; rewrite L' in F; cbn in F; discriminate F. }
+    rewrite Em'.
+    destruct Hsl as [->|(S1 & S2 & S3 & S4)].
+    + destruct Hkh as [[M0 C0]|[[M0 C0]|M0]].
+      * left. split; [exact M0|]. exact (CH1 s _ C0 G1 G2 G3 G4 G5 G6 G7 Ess Ela Wv).
+      * right; left. split; [exact M0|]. exact (CH2 s _ C0 G1 G2 G3 G4 G5 G6 G7 Ess Ela Wv).
+      * right; right. exact M0.
+    + rewrite S4. destruct Hkh as [[M0 C0]|[[M0 C0]|M0]]; rewrite M0; cbn.
+      * right; left. split; [reflexivity|]. apply (CH2 s1 _); auto.
+        apply (CH3 s s1 Hp Hs C0 (f_equal d_head Hk1) (f_equal d_prev Hk1) (f_equal d_w_size Hk1)
+                 (f_equal d_w_mask Hk1) (f_equal d_hash_size Hk1) (f_equal d_hash_shift Hk1)
+                 (f_equal d_hash_mask Hk1) S2 La1).
+        intros i Hi. apply S3. rewrite La1, La in Hi. lia.
+      * right; right. reflexivity.
+      * right; right. reflexivity.
+Qed.

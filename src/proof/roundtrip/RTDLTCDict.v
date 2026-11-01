@@ -1,0 +1,499 @@
+(** * Core part of the deflate law theory: deflateSetDictionary keeps W
+    Statement: RTDLTCSpecs.v; invariant: RTDLTCW.v; shared lemmas: RTDLTCLib.v. *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.roundtrip.RTDLTCLib.
+Require Import Zlib.proof.roundtrip.RTDLTCDictKit Zlib.proof.roundtrip.RTDLTCDictFrame Zlib.proof.roundtrip.RTDLTCDictIns.
+Require Import Zlib.proof.roundtrip.RTDLTCDictProj.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+Lemma eta_head_prev s : set_d_head (set_d_prev s (d_prev s)) (d_head s) = s.
+Proof. destruct s; reflexivity. Qed.
+
+Lemma head_twice s a : set_d_head (set_d_prev (set_d_head s a) (d_prev s)) (d_head s) = s.
+Proof. destruct s; reflexivity. Qed.
+
+Lemma fw_keep_hp s P H : fw_keep (set_d_head (set_d_prev s P) H) = fw_keep s.
+Proof. reflexivity. Qed.
+
+Lemma fw_keep_h s H : fw_keep (set_d_head s H) = fw_keep s.
+Proof. reflexivity. Qed.
+
+Lemma zframe_back z : zframe (zframe z [] 0 0) (z_out z) (z_avail_out z) (z_total_out z) = z.
+Proof. destruct z; reflexivity. Qed.
+
+Lemma fill_step (Hfill : fill_spec) s zd :
+  prm s -> wstruct s -> wpos s -> wwin s -> d_insert s = 0 -> d_wrap s = 0 ->
+  d_strstart s + d_lookahead s + z_avail_in zd <= d_w_size s ->
+  zin_in zd -> z_total_in zd + z_avail_in zd < 18446744073709551616 ->
+  exists s' k,
+    c_fill_window s zd = Some (s', mkST (z_in zd) (z_next_in zd + k) (z_avail_in zd - k) (z_total_in zd + k)
+                                     (z_out zd) (z_avail_out zd) (z_total_out zd) (z_adler zd) (z_msg zd)) /\
+    prm s' /\ wstruct s' /\ wpos s' /\ wwin s' /\ d_insert s' = 0 /\
+    fw_keep s' = fw_keep s /\ d_head s' = d_head s /\ d_prev s' = d_prev s /\
+    d_strstart s' = d_strstart s /\ d_block_start s' = d_block_start s /\ d_lookahead s' = d_lookahead s + k /\
+    0 <= k <= z_avail_in zd /\
+    (MIN_LOOKAHEAD <= d_lookahead s' \/ z_avail_in zd - k = 0).
+Proof.
+  intros Hprm Hws Hwp Hww Hins Hwr Hbnd Hzin Htot.
+  set (s0 := set_d_head s (repeat 0 (Z.to_nat (d_hash_size s)))).
+  set (zd0 := zframe zd [] 0 0).
+  assert (Hai : 0 <= z_avail_in zd) by (destruct Hzin as (_&_&Z3&_); lia).
+  assert (Hla0 : 0 <= d_lookahead s /\ 0 <= d_strstart s) by (destruct Hwp as (Q1&Q2&_); lia).
+  pose proof Hprm as Hprm'.
+  destruct Hprm' as (Pwb & Pws & Pwm & Phb & Phs & Phm & Psh & _).
+  assert (Hhs0 : 0 <= d_hash_size s) by (rewrite Phs; apply Z.pow_nonneg; lia).
+  assert (Hw512 : 512 <= d_w_size s <= 32768).
+  { rewrite Pws. split.
+    - change 512 with (2 ^ 9). apply Z.pow_le_mono_r; lia.
+    - change 32768 with (2 ^ 15). apply Z.pow_le_mono_r; lia. }
+  assert (Hpre : fill_pre s0).
+  { unfold fill_pre. split; [exact Hprm|]. split.
+    { destruct Hws as (W1 & W2 & W3 & W4 & W5). unfold wstruct. subst s0. autorewrite with dproj.
+      split; [exact W1|]. split; [exact W2|]. split; [exact W3|]. split; [exact W4|].
+      apply Zlength_repeat; exact Hhs0. }
+    split; [exact Hwp|]. split; [exact Hww|].
+    exists (fun v => v = 0). split; [|split].
+    - intros v ->; left; reflexivity.
+    - intros h Hh. subst s0. autorewrite with dproj. rewrite Znth_repeat'. reflexivity.
+      rewrite Z2Nat.id by lia. unfold wstruct in Hws. autorewrite with dproj in Hh. lia.
+    - intros q -> Hq. lia. }
+  assert (Hzall : zall zd0).
+  { split.
+    - destruct Hzin as (Z1 & Z2 & Z3 & Z4 & Z5). split; [exact Z1|]. split; [exact Z2|]. split; [exact Z3|].
+      split; [exact Z4|exact Z5].
+    - unfold zout_ok. subst zd0. autorewrite with dproj. lia. }
+  assert (Had : adler_ok (d_wrap s0) (z_adler zd0)).
+  { subst s0. autorewrite with dproj. rewrite Hwr. split; intros; lia. }
+  destruct (Hfill s0 zd0 Hpre Hzall Had) as
+    (s0' & zd0' & k & dd & Ef & Hpre' & Hkeep & Hz & Hd & Hst & Hbs & _ & _ & Hla & _ & Hmin & _).
+  assert (Hdd : dd = 0).
+  { destruct Hd as [Hd|[Hd1 Hd2]]; [exact Hd|]. subst s0. unfold MAX_DIST in Hd2. autorewrite with dproj in Hd2.
+    unfold MIN_LOOKAHEAD, MAX_MATCH, MIN_MATCH in Hd2. destruct Hwp as (Q1 & Q2 & _). lia. }
+  subst dd.
+  assert (Hst0 : d_strstart s0 < d_w_size s0 + MAX_DIST s0).
+  { subst s0. unfold MAX_DIST. autorewrite with dproj. unfold MIN_LOOKAHEAD, MAX_MATCH, MIN_MATCH. lia. }
+  assert (Hw0 : 262 <= d_w_size s0 <= 1073741824) by (subst s0; autorewrite with dproj; lia).
+  assert (Hi0 : d_insert s0 = 0) by (subst s0; autorewrite with dproj; exact Hins).
+  destruct (fill_frame s0 zd0 (d_head s) (d_prev s) (z_out zd) (z_avail_out zd) (z_total_out zd) Hw0 Hi0 Hst0)
+    as [Efr Hins'].
+  rewrite Ef in Efr. specialize (Hins' _ _ Ef).
+  subst s0 zd0. rewrite head_twice, zframe_back in Efr.
+  destruct Hz as (Z1 & Zk & Z2 & Z3 & Z4 & Z5 & Z6 & Z6x & Z7 & Z8 & Z9).
+  autorewrite with dproj in Zk, Z2, Z3, Z4, Z5, Z1, Z9. rewrite Hwr in Z5.
+  unfold adler_upd in Z5. cbn [Z.eqb Pos.eqb] in Z5.
+  rewrite u64_id in Z4 by (destruct Hzin as (_&_&_&_&Z0); lia).
+  exists (set_d_head (set_d_prev s0' (d_prev s)) (d_head s)), k.
+  split.
+  { rewrite Efr. f_equal. f_equal. destruct zd0'; cbn in *; subst; reflexivity. }
+  destruct Hpre' as (P1 & P2 & P3 & P4 & _).
+  assert (Ew : d_w_size s0' = d_w_size s) by exact (f_equal d_w_size Hkeep).
+  assert (Eh : d_hash_size s0' = d_hash_size s) by exact (f_equal d_hash_size Hkeep).
+  autorewrite with dproj in Hst, Hbs, Hla.
+  split; [exact P1|].
+  split.
+  { destruct P2 as (W1 & W2 & W3 & W4 & W5). destruct Hws as (V1 & V2 & V3 & V4 & V5).
+    unfold wstruct. autorewrite with dproj.
+    split; [exact W1|]. split; [exact W2|]. split; [exact W3|]. split; lia. }
+  split; [unfold wpos in *; autorewrite with dproj; exact P3|].
+  split; [unfold wwin in *; autorewrite with dproj; exact P4|].
+  split; [autorewrite with dproj; exact Hins'|].
+  split; [rewrite fw_keep_hp, Hkeep, fw_keep_h; reflexivity|].
+  autorewrite with dproj.
+  split; [reflexivity|]. split; [reflexivity|]. split; [lia|]. split; [lia|]. split; [lia|]. split; [lia|].
+  destruct Hmin as [Hmin|Hmin]; [left; exact Hmin|right; lia].
+Qed.
+
+Lemma bind_Some {A B} (x : A) (f : A -> option B) : bind (Some x) f = f x.
+Proof. reflexivity. Qed.
+
+(** The stream of the dictionary after [n] bytes were read. *)
+Definition zadv (zd : strm) (n : Z) : strm :=
+  mkST (z_in zd) (z_next_in zd + n) (z_avail_in zd - n) (z_total_in zd + n) (z_out zd) (z_avail_out zd)
+       (z_total_out zd) (z_adler zd) (z_msg zd).
+
+Lemma zadv_zin zd n :
+  zin_in zd -> 0 <= n <= z_avail_in zd -> z_total_in zd + z_avail_in zd < 18446744073709551616 ->
+  zin_in (zadv zd n).
+Proof.
+  intros (Z1 & Z2 & Z3 & Z4 & Z5) Hn Ht. unfold zadv, zin_in; cbn.
+  split; [exact Z1|]. lia.
+Qed.
+
+Lemma zadv_zadv z a b : zadv (zadv z a) b = zadv z (a + b).
+Proof. unfold zadv; cbn. f_equal; lia. Qed.
+
+(** head entries that one slide_hash turns into NIL *)
+Definition heads_le (w : Z) (H : list Z) : Prop := forall i, 0 <= i < Zlength H -> Znth i H <= w.
+
+(** The invariant of the loop [while (s->lookahead >= MIN_MATCH) { ...; fill_window(s); }]. *)
+Definition Jl (s2 : dstate) (zd2 : strm) (c1 c2 : Prop) (a : dstate * strm) : Prop :=
+  let (s, zd) := a in
+  prm s /\ wstruct s /\ wpos s /\ wwin s /\ d_insert s = 0 /\ d_block_start s = 0 /\ d_wrap s = 0 /\
+  fw_keep s = fw_keep s2 /\ d_strstart s + d_lookahead s <= z_avail_in zd2 /\
+  zd = zadv zd2 (d_strstart s + d_lookahead s) /\
+  (d_lookahead s < MIN_LOOKAHEAD -> z_avail_in zd2 - (d_strstart s + d_lookahead s) = 0) /\
+  (c1 -> chains (d_strstart s) (d_head s) (d_prev s)) /\ (c2 -> heads_le (d_w_size s) (d_head s)).
+
+Lemma fw_keep_ins s h P H a b :
+  fw_keep (set_d_lookahead (set_d_strstart (set_d_head (set_d_prev (set_d_ins_h s h) P) H) a) b) = fw_keep s.
+Proof. reflexivity. Qed.
+
+Lemma sd_loop (Hfill : fill_spec) s2 zd2 c1 c2 :
+  zin_in zd2 -> z_avail_in zd2 <= d_w_size s2 -> z_total_in zd2 + z_avail_in zd2 < 18446744073709551616 ->
+  forall a, Jl s2 zd2 c1 c2 a ->
+  exists b, loop FUEL sd_body a = Some b /\ Jl s2 zd2 c1 c2 b /\ d_lookahead (fst b) < MIN_MATCH.
+Proof.
+  intros Hz2 Hav2 Htot2.
+  set (m := fun a : dstate * strm => z_avail_in (snd a) + (if d_lookahead (fst a) >=? MIN_MATCH then 1 else 0)).
+  assert (Hm : forall a, Jl s2 zd2 c1 c2 a -> 0 <= m a).
+  { intros [s zd] (_ & _ & _ & _ & _ & _ & _ & _ & Hn & Ezd & _). subst zd m. cbn [fst snd zadv z_avail_in].
+    destruct (_ >=? _); lia. }
+  assert (Hb : forall a, Jl s2 zd2 c1 c2 a -> exists r, sd_body a = Some r /\
+     match r with inl a' => Jl s2 zd2 c1 c2 a' /\ m a' < m a
+                | inr b => Jl s2 zd2 c1 c2 b /\ d_lookahead (fst b) < MIN_MATCH end).
+  { intros [s zd] HJ. pose proof HJ as HJ'.
+    destruct HJ' as (Hprm & Hws & Hwp & Hww & Hins & Hbs & Hwr & Hkeep & Hn & Ezd & Hmin & Hc1 & Hc2).
+    unfold sd_body.
+    destruct (Z.geb_spec (d_lookahead s) MIN_MATCH) as [Hge|Hlt].
+    2:{ eexists; split; [reflexivity|]. split; [exact HJ|cbn [fst]; lia]. }
+    pose proof Hwp as (Q1 & Q2 & Q3 & Q4 & Q5 & Q6 & Q7 & Q8 & Q9).
+    pose proof Hws as (V1 & V2 & V3 & V4 & V5).
+    assert (Ew : d_w_size s = d_w_size s2) by exact (f_equal d_w_size Hkeep).
+    assert (Hw512 : 512 <= d_w_size s <= 32768).
+    { destruct Hprm as (Pwb & Pws & _). rewrite Pws. split.
+      - change 512 with (2 ^ 9). apply Z.pow_le_mono_r; lia.
+      - change 32768 with (2 ^ 15). apply Z.pow_le_mono_r; lia. }
+    unfold MIN_MATCH in Hge.
+    assert (Eu : u32 (d_lookahead s - (MIN_MATCH - 1)) = d_lookahead s - 2).
+    { unfold u32, MIN_MATCH. apply Z.mod_small. lia. }
+    rewrite Eu.
+    destruct (sd_ins_ok s (d_strstart s) (d_lookahead s - 2) Hprm Hws ltac:(lia) ltac:(lia) ltac:(lia))
+      as (h & P & H & Eloop & LP & LH & Hlt' & Hch').
+    { intros i Hi. apply Hww. lia. }
+    rewrite Eloop, bind_Some. cbv beta iota zeta.
+    set (s3 := set_d_lookahead (set_d_strstart (set_d_head (set_d_prev (set_d_ins_h s h) P) H)
+                                 (d_strstart s + (d_lookahead s - 2))) (MIN_MATCH - 1)).
+    assert (Hprm3 : prm s3) by exact Hprm.
+    assert (Hws3 : wstruct s3).
+    { subst s3. unfold wstruct. autorewrite with dproj. split; [exact V1|]. split; [exact V2|].
+      split; [exact V3|]. split; lia. }
+    assert (Hwp3 : wpos s3).
+    { subst s3. unfold wpos. autorewrite with dproj. unfold MIN_MATCH. lia. }
+    assert (Hww3 : wwin s3).
+    { subst s3. unfold wwin. autorewrite with dproj. intros i Hi. apply Hww. unfold MIN_MATCH in Hi. lia. }
+    assert (Hi3 : d_insert s3 = 0) by (subst s3; autorewrite with dproj; exact Hins).
+    assert (Hwr3 : d_wrap s3 = 0) by (subst s3; autorewrite with dproj; exact Hwr).
+    subst zd.
+    destruct (fill_step Hfill s3 (zadv zd2 (d_strstart s + d_lookahead s)) Hprm3 Hws3 Hwp3 Hww3 Hi3 Hwr3)
+      as (s' & k & Efill & R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13).
+    { subst s3. autorewrite with dproj. cbn [zadv z_avail_in]. unfold MIN_MATCH. lia. }
+    { apply zadv_zin; [exact Hz2|lia|exact Htot2]. }
+    { cbn [zadv z_avail_in z_total_in]. lia. }
+    rewrite Efill, bind_Some.
+    change (mkST _ _ _ _ _ _ _ _ _) with (zadv (zadv zd2 (d_strstart s + d_lookahead s)) k).
+    rewrite zadv_zadv.
+    eexists; split; [reflexivity|].
+    subst s3. autorewrite with dproj in R6, R7, R8, R9, R10, R11. unfold MIN_MATCH in R11.
+    cbn [zadv z_avail_in] in R12, R13.
+    assert (Ew' : d_w_size s' = d_w_size s) by exact (f_equal d_w_size R6).
+    split.
+    - split; [exact R1|]. split; [exact R2|]. split; [exact R3|]. split; [exact R4|]. split; [exact R5|].
+      split; [lia|]. split; [rewrite (f_equal d_wrap R6 : d_wrap s' = _); exact Hwr|].
+      split; [rewrite R6, fw_keep_ins; exact Hkeep|].
+      split; [lia|]. split; [f_equal; lia|].
+      split; [intros Hl; destruct R13 as [R13|R13]; lia|].
+      split.
+      + intros C. rewrite R7, R8, R9. replace (d_strstart s + (d_lookahead s - 2)) with
+          (d_strstart s + (d_lookahead s - 2)) by reflexivity. apply Hch'. exact (Hc1 C).
+      + intros C. rewrite R7, Ew'.
+        destruct (sd_ins_heads s (d_strstart s) (d_lookahead s - 2) (fun v => v <= d_w_size s)
+                    Hprm Hws ltac:(lia) ltac:(lia) ltac:(lia)) as (h' & P' & H' & Eloop' & HQ).
+        { intros i Hi. apply Hww. lia. }
+        { exact (Hc2 C). }
+        { intros p Hp. cbv beta. lia. }
+        rewrite Eloop in Eloop'.
+        apply (f_equal (fun o => match o with Some r => d_head (fst r) | None => nil end)) in Eloop'.
+        cbv beta iota in Eloop'. cbn [fst] in Eloop'. autorewrite with dproj in Eloop'. subst H'. exact HQ.
+    - subst m. cbn [fst snd zadv z_avail_in]. rewrite R11. unfold MIN_MATCH.
+      destruct (Z.geb_spec (d_lookahead s) 3); [|lia].
+      destruct (Z.geb_spec (3 - 1 + k) 3); lia. }
+  intros a Ha.
+  apply (loop_measure sd_body (Jl s2 zd2 c1 c2) _ m FUEL Hm Hb a Ha).
+  destruct a as [s zd]. destruct Ha as (_ & _ & (Q1 & Q2 & _) & _ & _ & _ & _ & _ & Hn & Ezd & _). subst zd m.
+  cbn [fst snd zadv z_avail_in]. change (2 ^ Z.of_nat FUEL) with 1099511627776.
+  destruct Hz2 as (_ & _ & Z3 & _). destruct (_ >=? _); lia.
+Qed.
+
+Lemma prm_keep a b : fw_keep b = fw_keep a -> prm a -> prm b.
+Proof.
+  intros E.
+  assert (E1 : d_w_bits b = d_w_bits a) by exact (f_equal d_w_bits E).
+  assert (E2 : d_w_size b = d_w_size a) by exact (f_equal d_w_size E).
+  assert (E3 : d_w_mask b = d_w_mask a) by exact (f_equal d_w_mask E).
+  assert (E4 : d_hash_bits b = d_hash_bits a) by exact (f_equal d_hash_bits E).
+  assert (E5 : d_hash_size b = d_hash_size a) by exact (f_equal d_hash_size E).
+  assert (E6 : d_hash_mask b = d_hash_mask a) by exact (f_equal d_hash_mask E).
+  assert (E7 : d_hash_shift b = d_hash_shift a) by exact (f_equal d_hash_shift E).
+  assert (E8 : d_tr b = d_tr a) by exact (f_equal d_tr E).
+  assert (E9 : d_pbm b = d_pbm a) by exact (f_equal d_pbm E).
+  assert (E10 : d_pending_buf_size b = d_pending_buf_size a) by exact (f_equal d_pending_buf_size E).
+  assert (E11 : d_method b = d_method a) by exact (f_equal d_method E).
+  unfold prm, d_L, d_level, d_strategy. rewrite E1, E2, E3, E4, E5, E6, E7, E8, E9, E10, E11. tauto.
+Qed.
+
+Lemma clear_hash_ok s :
+  1 <= d_hash_size s <= 65536 -> Zlength (d_head s) = d_hash_size s ->
+  c_clear_hash s = Some (set_d_slid (set_d_head s (repeat 0 (Z.to_nat (d_hash_size s)))) 0).
+Proof.
+  intros H1 H2. unfold c_clear_hash, wr.
+  replace (u32 (d_hash_size s - 1)) with (d_hash_size s - 1) by (unfold u32; rewrite Z.mod_small; lia).
+  unfold in_range. rewrite H2.
+  replace ((0 <=? d_hash_size s - 1) && (d_hash_size s - 1 <? d_hash_size s)) with true
+    by (symmetry; apply andb_true_iff; split; [apply Z.leb_le|apply Z.ltb_lt]; lia).
+  rewrite bind_Some. unfold guard.
+  replace ((1 <=? d_hash_size s) && (Zlength (upd_Znth (d_hash_size s - 1) (d_head s) NIL) =? d_hash_size s))
+    with true.
+  - reflexivity.
+  - symmetry. apply andb_true_iff. split; [apply Z.leb_le; lia|]. apply Z.eqb_eq.
+    rewrite upd_Znth_Zlength; lia.
+Qed.
+
+Lemma chains_of_chain_ok x P :
+  chain_ok x -> d_strstart x = 0 -> Zlength (d_head x) = d_hash_size x -> chains 0 (d_head x) P.
+Proof.
+  intros (G & G1 & G2 & G3) H0 HL. rewrite H0 in G1. split.
+  - intros i Hi. left. destruct (G1 _ (G2 i ltac:(lia))); [assumption|lia].
+  - intros q Hq; lia.
+Qed.
+
+Lemma heads_le_of_slide x :
+  chain_ok (slide_hc x) -> d_strstart x = 0 -> Zlength (d_head x) = d_hash_size x ->
+  heads_le (d_w_size x) (d_head x).
+Proof.
+  intros (G & G1 & G2 & G3) H0 HL i Hi. unfold slide_hc in *. autorewrite with dproj in *.
+  rewrite H0 in G1. specialize (G2 i ltac:(lia)). rewrite Znth_map in G2 by lia.
+  destruct (G1 _ G2) as [E|E]; [|lia]. unfold slide_entry, NIL in E.
+  destruct (Z.geb_spec (Znth i (d_head x)) (d_w_size x)); lia.
+Qed.
+
+Lemma land_small q b : 0 <= b -> 0 <= q < 2 ^ b -> Z.land q (2 ^ b - 1) = q.
+Proof.
+  intros Hb Hq. replace (2 ^ b - 1) with (Z.ones b) by (rewrite Z.ones_equiv; lia).
+  rewrite Z.land_ones by lia. apply Z.mod_small. lia.
+Qed.
+
+Lemma chain_ok_of_chains x n :
+  chains n (d_head x) (d_prev x) -> 0 <= n <= d_strstart x -> n <= d_w_size x ->
+  d_w_size x = 2 ^ d_w_bits x -> 0 <= d_w_bits x -> d_w_mask x = d_w_size x - 1 ->
+  Zlength (d_head x) = d_hash_size x -> chain_ok x.
+Proof.
+  intros [C1 C2] Hn Hw Hwb Hb Hm HL. exists (inG n). split; [|split].
+  - intros v [->|Hv]; [left; reflexivity|right; lia].
+  - intros h Hh. apply C1. lia.
+  - intros q [Hq|Hq] Hq0 _; [lia|]. rewrite Hm, Hwb, land_small by (try rewrite <- Hwb; lia). apply C2. lia.
+Qed.
+
+Lemma slide_chain_ok x :
+  heads_le (d_w_size x) (d_head x) -> Zlength (d_head x) = d_hash_size x -> chain_ok (slide_hc x).
+Proof.
+  intros Hle HL. exists (fun v => v = 0). unfold slide_hc. split; [|split].
+  - intros v ->; left; reflexivity.
+  - intros h Hh. autorewrite with dproj in *. rewrite Znth_map by lia. unfold slide_entry.
+    specialize (Hle h ltac:(lia)). unfold NIL. destruct (Z.geb_spec (Znth h (d_head x)) (d_w_size x)); lia.
+  - intros q -> Hq; lia.
+Qed.
+
+Ltac br_fin Hpre :=
+      match goal with |- prm ?x /\ _ =>
+        let A1 := fresh "A" in let A2 := fresh "A" in let A3 := fresh "A" in let A4 := fresh "A" in
+        destruct (Hpre x) as (A1 & A2 & A3 & A4);
+        [autorewrite with dproj; first [reflexivity | lia | (right; reflexivity) | (left; reflexivity)] ..|];
+        split; [exact A1|]; split; [exact A2|]; split; [exact A3|]; split; [exact A4|];
+        autorewrite with dproj;
+        repeat match goal with |- _ /\ _ => split end;
+        first [reflexivity | lia | (right; reflexivity) | (left; reflexivity)] end.
+
+Theorem dict_ok : fill_spec -> dict_spec.
+Proof.
+  intros Hfill s z d HW Hst Hwrap Hss Hla Hbs Hsn Hbytes Hlen Htot Hadl.
+  pose proof HW as (Hprm & Hws & Hwp & Hww & Hwh & Hwm & Hl0 & syms & Hwt).
+  unfold c_deflateSetDictionary.
+  replace (bad_state s) with false by (unfold bad_state, c_deflateStateCheck; rewrite Hst; reflexivity).
+  rewrite Hst, Hla. rewrite (proj2 (Z.eqb_neq (d_wrap s) 2)) by lia.
+  rewrite andb_false_r. cbn [orb negb Z.eqb Pos.eqb].
+  cbv beta iota zeta.
+  set (z1 := if d_wrap s =? 1 then set_z_adler z (Zlib.proof.adler32.Model.adler32_z_val (z_adler z) d) else z).
+  set (a1 := if d_wrap s =? 1 then Zlib.proof.adler32.Model.ref_adler32 (z_adler z) d else z_adler z).
+  assert (Ez1 : z1 = mkST (z_in z) (z_next_in z) (z_avail_in z) (z_total_in z) (z_out z) (z_avail_out z)
+                          (z_total_out z) a1 (z_msg z)).
+  { subst z1 a1. destruct (Z.eqb_spec (d_wrap s) 1) as [E|E].
+    - rewrite Zlib.proof.adler32.Model.adler32_z_val_ref by (apply Hadl; exact E). destruct z; reflexivity.
+    - destruct z; reflexivity. }
+  rewrite Ez1. cbn [z_in z_next_in z_avail_in z_total_in z_out z_avail_out z_total_out z_adler z_msg].
+  clear Ez1 z1.
+  (* common facts *)
+  pose proof Hprm as (Pwb & Pws & Pwm & Phb & Phs & Phm & Psh & _).
+  assert (Hw512 : 512 <= d_w_size s <= 32768).
+  { rewrite Pws. split.
+    - change 512 with (2 ^ 9). apply Z.pow_le_mono_r; lia.
+    - change 32768 with (2 ^ 15). apply Z.pow_le_mono_r; lia. }
+  assert (Hh256 : 256 <= d_hash_size s <= 65536).
+  { rewrite Phs. split.
+    - change 256 with (2 ^ 8). apply Z.pow_le_mono_r; lia.
+    - change 65536 with (2 ^ 16). apply Z.pow_le_mono_r; lia. }
+  pose proof Hwp as (Q1 & Q2 & Q3 & Q4 & Q5 & Q6 & Q7 & Q8 & Q9).
+  pose proof Hws as (V1 & V2 & V3 & V4 & V5).
+  assert (Hins : d_insert s = 0) by lia.
+  match goal with |- exists _ _ _, bind ?e _ = _ /\ _ =>
+    assert (Hbr : exists s2 off len, e = Some (s2, off, len) /\
+      prm s2 /\ wstruct s2 /\ wpos s2 /\ wwin s2 /\ d_insert s2 = 0 /\ d_block_start s2 = 0 /\
+      d_wrap s2 = 0 /\ d_strstart s2 = 0 /\ d_lookahead s2 = 0 /\ fw_keep s2 = fw_keep (set_d_wrap s 0) /\
+      d_prev s2 = d_prev s /\
+      (d_head s2 = d_head s \/ d_head s2 = repeat 0 (Z.to_nat (d_hash_size s))) /\
+      len = Z.min (Zlength d) (d_w_size s) /\ off = Zlength d - len) end.
+  { autorewrite with dproj.
+    assert (Hpre : forall s2, d_prev s2 = d_prev s -> d_head s2 = d_head s \/
+                     d_head s2 = repeat 0 (Z.to_nat (d_hash_size s)) ->
+                   fw_keep s2 = fw_keep (set_d_wrap s 0) -> d_insert s2 = 0 -> d_block_start s2 = 0 ->
+                   d_wrap s2 = 0 -> d_strstart s2 = 0 -> d_lookahead s2 = 0 -> d_high_water s2 = d_high_water s ->
+                   d_window s2 = d_window s ->
+                   prm s2 /\ wstruct s2 /\ wpos s2 /\ wwin s2).
+    { intros s2 E1 E2 E3 E4 E5 E6 E7 E8 E9 E10.
+      assert (Ew : d_w_size s2 = d_w_size s) by exact (f_equal d_w_size E3).
+      assert (Eh : d_hash_size s2 = d_hash_size s) by exact (f_equal d_hash_size E3).
+      assert (Ews : d_window_size s2 = d_window_size s) by exact (f_equal d_window_size E3).
+      split.
+      { exact (prm_keep _ _ E3 Hprm). }
+      split.
+      { unfold wstruct. rewrite E10, Ew, Ews, E1, Eh. split; [exact V1|]. split; [exact V2|].
+        split; [exact V3|]. split; [exact V4|]. destruct E2 as [E2|E2]; rewrite E2; [exact V5|].
+        apply Zlength_repeat; lia. }
+      split.
+      { unfold wpos. rewrite E4, E5, E7, E8, E9, Ews, Ew. unfold MAX_DIST. lia. }
+      { pose proof Hww as Hww2. unfold wwin in *. rewrite E7, E8, E9, E10. rewrite Hss, Hla in Hww2. exact Hww2. } }
+    destruct (Z.geb_spec (Zlength d) (d_w_size s)) as [Hge|Hlt].
+    - destruct (Z.eqb_spec (d_wrap s) 0) as [Ew0|Ew0].
+      + rewrite clear_hash_ok by (autorewrite with dproj; lia). rewrite !bind_Some.
+        eexists _, _, _. split; [reflexivity|].
+        br_fin Hpre.
+      + rewrite !bind_Some. eexists _, _, _. split; [reflexivity|]. br_fin Hpre.
+    - eexists _, _, _. split; [reflexivity|]. br_fin Hpre. }
+  destruct Hbr as (s2 & off & len & Ebr & B1 & B2 & B3 & B4 & B5 & B6 & B7 & B8 & B9 & B10 & B11 & B12 & B13 & B14).
+  rewrite Ebr, bind_Some. cbv beta iota.
+  set (zd2 := mkST d off len (z_total_in z) (z_out z) (z_avail_out z) (z_total_out z) a1 (z_msg z)).
+  assert (Hz2 : zin_in zd2).
+  { unfold zin_in; subst zd2; cbn [z_in z_next_in z_avail_in z_total_in]. split; [exact Hbytes|].
+    pose proof (Zlength_nonneg d). lia. }
+  assert (Ew2 : d_w_size s2 = d_w_size s) by exact (f_equal d_w_size B10).
+  destruct (fill_step Hfill s2 zd2 B1 B2 B3 B4 B5 B7 ltac:(subst zd2; cbn [z_avail_in]; lia) Hz2
+              ltac:(subst zd2; cbn [z_avail_in z_total_in]; lia)) as
+    (s3 & k1 & Ef1 & R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12 & R13).
+  rewrite Ef1, bind_Some. cbv beta iota.
+  change (mkST (z_in zd2) (z_next_in zd2 + k1) (z_avail_in zd2 - k1) (z_total_in zd2 + k1) (z_out zd2)
+            (z_avail_out zd2) (z_total_out zd2) (z_adler zd2) (z_msg zd2)) with (zadv zd2 k1).
+  assert (HJ : Jl s2 zd2 (chains 0 (d_head s2) (d_prev s2)) (heads_le (d_w_size s2) (d_head s2)) (s3, zadv zd2 k1)).
+  { unfold Jl. rewrite R9, R11, B8, B9.
+    split; [exact R1|]. split; [exact R2|]. split; [exact R3|]. split; [exact R4|]. split; [exact R5|].
+    split; [rewrite R10; exact B6|]. split; [rewrite (f_equal d_wrap R6 : d_wrap s3 = _); exact B7|].
+    split; [exact R6|]. split; [lia|]. split; [f_equal; lia|].
+    split; [intros Hl; destruct R13; lia|].
+    split; [intros C; rewrite R7, R8; exact C|].
+    intros C; rewrite R7, (f_equal d_w_size R6 : d_w_size s3 = _); exact C. }
+  destruct (sd_loop Hfill s2 zd2 _ _ Hz2 ltac:(subst zd2; cbn [z_avail_in]; lia)
+              ltac:(subst zd2; cbn [z_avail_in z_total_in]; lia) _ HJ) as ([sF zdF] & Eloop & JF & HlaF).
+  rewrite Eloop, bind_Some. cbv beta iota.
+  destruct JF as (F1 & F2 & F3 & F4 & F5 & F6 & F7 & F8 & F9 & F10 & F11 & F12 & F13).
+  subst zdF. cbn [fst] in HlaF.
+  pose proof F3 as (G1 & G2 & G3 & G4 & G5 & G6 & G7 & G8 & G9).
+  assert (Hn : d_strstart sF + d_lookahead sF = len).
+  { unfold MIN_LOOKAHEAD, MAX_MATCH, MIN_MATCH in *. subst zd2. cbn [z_avail_in] in F9, F11.
+    specialize (F11 ltac:(lia)). lia. }
+  assert (Hu : u32 (d_strstart sF + d_lookahead sF) = d_strstart sF + d_lookahead sF).
+  { unfold u32. apply Z.mod_small. lia. }
+  rewrite Hu.
+  assert (Ek : fw_keep sF = fw_keep (set_d_wrap s 0)) by (rewrite F8; exact B10).
+  assert (K1 : d_tr sF = d_tr s) by exact (f_equal d_tr Ek).
+  assert (K2 : d_pbm sF = d_pbm s) by exact (f_equal d_pbm Ek).
+  assert (K3 : d_w_size sF = d_w_size s) by exact (f_equal d_w_size Ek).
+  assert (K4 : d_hash_size sF = d_hash_size s) by exact (f_equal d_hash_size Ek).
+  eexists _, _, len. split; [reflexivity|].
+  match goal with |- W ?x /\ _ => set (sf := x) end.
+  assert (Hlv : d_level sf = d_level s) by (subst sf; autorewrite with dproj; unfold d_level; rewrite K1; reflexivity).
+  assert (Hsyms : syms = []).
+  { destruct Hwt as ((_ & _ & T3 & _) & _). unfold d_sym_next in Hsn. rewrite Hsn in T3.
+    apply Zlength_nil_inv. lia. }
+  subst syms.
+  split.
+  { split; [subst sf; exact F1|]. split; [subst sf; exact F2|].
+    split.
+    { subst sf. unfold wpos. autorewrite with dproj. unfold MAX_DIST. lia. }
+    split.
+    { subst sf. unfold wwin in *. autorewrite with dproj. rewrite Z.add_0_r. exact F4. }
+    split.
+    { (* whash *)
+      assert (Hc1 : chain_ok s -> chains 0 (d_head s2) (d_prev s2)).
+      { intros Hch. destruct B12 as [E|E]; rewrite E.
+        - apply chains_of_chain_ok; [exact Hch|exact Hss|exact V5].
+        - split; [|intros; lia]. intros i Hi. left. rewrite Znth_repeat'; [reflexivity|].
+          rewrite Zlength_repeat in Hi by lia. rewrite Z2Nat.id by lia. lia. }
+      assert (Hc1F : chain_ok s -> chain_ok sf).
+      { intros Hch. specialize (F12 (Hc1 Hch)).
+        destruct F2 as (_ & _ & _ & _ & L5). destruct F1 as (Fwb & Fws & Fwm & _).
+        subst sf. apply (chain_ok_of_chains _ (d_strstart sF)); autorewrite with dproj; try lia; auto. }
+      assert (Hc2F : chain_ok (slide_hc s) -> chain_ok (slide_hc sf)).
+      { intros Hch. assert (Hle : heads_le (d_w_size s2) (d_head s2)).
+        { rewrite Ew2. destruct B12 as [E|E]; rewrite E.
+          - apply heads_le_of_slide; [exact Hch|exact Hss|exact V5].
+          - intros i Hi. rewrite Znth_repeat'; [lia|]. rewrite Zlength_repeat in Hi by lia. lia. }
+        specialize (F13 Hle). destruct F2 as (_ & _ & _ & _ & L5).
+        subst sf. apply slide_chain_ok; autorewrite with dproj; assumption. }
+      assert (Hm : d_matches sf = d_matches s) by (subst sf; autorewrite with dproj; unfold d_matches; rewrite K1; reflexivity).
+      unfold whash in *. rewrite Hlv, Hm.
+      destruct (d_level s =? 0).
+      - destruct Hwh as [[A B]|[[A B]|A]].
+        + left. split; [exact A|exact (Hc1F B)].
+        + right; left. split; [exact A|exact (Hc2F B)].
+        + right; right; exact A.
+      - destruct Hwh as [A B]. split; [exact A|exact (Hc1F B)]. }
+    split.
+    { subst sf. unfold wmatch. autorewrite with dproj. unfold MIN_MATCH, MAX_MATCH. lia. }
+    split.
+    { intros _. subst sf. autorewrite with dproj. lia. }
+    exists [].
+    destruct Hwt as (T1 & T2 & T3 & T4 & T5).
+    split; [subst sf; autorewrite with dproj; rewrite K1, K2; exact T1|].
+    split; [subst sf; autorewrite with dproj; unfold d_L in *; rewrite K1; exact T2|].
+    split; [constructor|].
+    split; [reflexivity|].
+    intros _. subst sf. autorewrite with dproj. replace (blk_len []) with 0 by reflexivity. lia. }
+  assert (K5 : d_status sF = d_status s) by exact (f_equal d_status Ek).
+  assert (K6 : d_gzhead sF = d_gzhead s) by exact (f_equal d_gzhead Ek).
+  assert (K7 : d_gzindex sF = d_gzindex s) by exact (f_equal d_gzindex Ek).
+  assert (K8 : d_last_flush sF = d_last_flush s) by exact (f_equal d_last_flush Ek).
+  assert (K9 : d_method sF = d_method s) by exact (f_equal d_method Ek).
+  assert (K10 : d_po sF = d_po s) by exact (f_equal d_po Ek).
+  assert (K11 : d_w_bits sF = d_w_bits s) by exact (f_equal d_w_bits Ek).
+  assert (K12 : d_hash_bits sF = d_hash_bits s) by exact (f_equal d_hash_bits Ek).
+  assert (K13 : d_pending_buf_size sF = d_pending_buf_size s) by exact (f_equal d_pending_buf_size Ek).
+  subst sf.
+  split.
+  { unfold api_eq. autorewrite with dproj. rewrite K5, K6, K7, K8, K9. tauto. }
+  split.
+  { unfold out_eq. autorewrite with dproj. rewrite K1, K2, K10. tauto. }
+  split.
+  { unfold same_prm. autorewrite with dproj. unfold d_L, d_level, d_strategy. rewrite K1, K3, K11, K12, K13.
+    tauto. }
+  autorewrite with dproj.
+  split; [reflexivity|].
+  split; [reflexivity|].
+  split.
+  { rewrite Hn, B13. split.
+    - intros E. destruct d; [reflexivity|]. rewrite Zlength_cons in E. pose proof (Zlength_nonneg d). lia.
+    - intros ->. rewrite Zlength_nil. lia. }
+  split; [unfold d_sym_next in *; rewrite K1; exact Hsn|].
+  split; [pose proof (Zlength_nonneg d); lia|].
+  rewrite Hn. subst zd2. unfold zadv. cbn [z_total_in z_out z_avail_out z_total_out z_adler z_msg]. reflexivity.
+Qed.

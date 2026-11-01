@@ -1,0 +1,95 @@
+(** * deflate_huff part: see RTDLTCHuffKit.v for the statement and the design. *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.roundtrip.RTDLTCHuffGlue.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+(** [s->insert = 0] changes nothing but insert. *)
+Lemma W_insert0 s : W s -> W (set_d_insert s 0).
+Proof.
+  intros (Hp & Hs & Hpos & Hw & Hh & Hm & H0 & syms & Ht).
+  destruct Hpos as (P1 & P2 & P3 & P4 & P5 & P6 & P7 & P8 & P9).
+  unfold W. split; [exact Hp|]. split; [exact Hs|].
+  split; [unfold wpos, MAX_DIST in *; autorewrite with hproj; repeat split; lia|].
+  split; [exact Hw|]. split; [exact Hh|]. split; [exact Hm|]. split; [exact H0|].
+  exists syms. exact Ht.
+Qed.
+
+Lemma hfr_insert0 s : hfr s (set_d_insert s 0).
+Proof.
+  unfold hfr. split; [unfold same_prm; repeat split; reflexivity|]. split; [unfold api_eq; repeat split; reflexivity|].
+  split; [reflexivity|]. intros t. reflexivity.
+Qed.
+
+Lemma last_ev_app evs e : Forall (fun e => ev_last e = 0) evs -> ev_last e = 1 -> last_ev (evs ++ [e]).
+Proof. intros H He. exists evs, e. split; [reflexivity|]. split; [exact He|exact H]. Qed.
+
+Theorem htail_ok : hfbw_stmt -> htail_stmt.
+Proof.
+  intros Hfbw s0 z0 flush s z evs HI Hfl Hfn0 Hnf Hla Hai.
+  destruct HI as (Hz0 & Ha0 & Hc & Hq & Hz & Ha & Hl).
+  assert (Hfn : fn_of s = 3) by (rewrite (fn_of_hcrel _ _ _ _ _ _ Hc); exact Hfn0).
+  assert (Hws : d_wrap s = d_wrap s0) by exact (wrap_hcrel _ _ _ _ _ _ Hc).
+  destruct Hc as (HW & He & Ho & Hrest).
+  assert (Hc : hcrel s0 z0 flush s z evs) by exact (conj HW (conj He (conj Ho Hrest))).
+  set (s1 := set_d_insert s 0).
+  assert (HW1 : W s1) by exact (W_insert0 s HW).
+  assert (Hc1 : hcrel s0 z0 flush s1 z evs) by exact (hcrel_hfr _ _ _ _ _ _ _ Hc (hfr_insert0 s) HW1 He Ho).
+  destruct (W_HS0 s1 HW1 He Ho Hq Hfn) as (syms & HS & HL).
+  assert (Hbl : blk_len syms = d_strstart s - d_block_start s)
+    by (destruct HS as (_ & _ & _ & _ & _ & _ & _ & _ & _ & B & _); exact B).
+  assert (Hsn : d_sym_next s = 3 * Zlength syms)
+    by (destruct HS as (_ & _ & _ & _ & _ & _ & (_ & _ & T3 & _) & _); exact T3).
+  unfold c_deflate_tail. fold s1.
+  destruct (Z.eqb_spec flush Z_FINISH) as [Hfin|Hnfin].
+  - destruct (Hfbw s1 z flush syms 1 HS Hz Ha Hfl ltac:(lia) (fun _ => Hfin) (fun H => ltac:(discriminate H)))
+      as (s' & z' & e & E & Hc' & Hlast & Hz' & Had & Hai' & Hla' & Hss & Hbs & Hsn' & Hbv & Hbv0 & Hpz).
+    assert (Hc2 := hcrel_trans _ _ _ _ _ _ _ _ _ Hz0 Ha0 Hc1 Hc').
+    assert (Hw' : d_wrap s' = d_wrap s0) by (rewrite (wrap_hcrel _ _ _ _ _ _ Hc'); exact Hws).
+    assert (Hub : ub s' = 0) by (unfold ub; rewrite Hla', Hss, Hbs; unfold s1; autorewrite with hproj; lia).
+    specialize (Hbv0 eq_refl).
+    unfold c_flush_block. rewrite E. cbn [bind].
+    destruct (Z.eqb_spec (z_avail_out z') 0) as [Hz0'|Hn0'];
+    [destruct (Z.eqb_spec (d_pending s') 0) as [Hp0|Hp0]; [destruct (Z.eqb_spec (d_wrap s') 0) as [Hw0|Hw0]|]|];
+    cbn [andb orb negb Z.eqb Pos.eqb]; do 4 eexists; (split; [reflexivity|]); (split; [exact Hc2|]);
+    cbn [hbpost].
+    + (* finish_done, nothing pending *)
+      split; [exact (last_ev_app _ _ Hl Hlast)|]. split; [exact Hfin|]. split; [rewrite Hai'; exact Hai|].
+      split; [exact Hub|]. split; [exact Hsn'|].
+      split; [|exact Hbv0]. destruct Hc2 as (_ & _ & (_ & _ & _ & _ & _ & Hpo) & _).
+      unfold quiet. split; [exact Hp0|]. split; [exact (Hpo Hp0)|lia].
+    + (* finish_started, wrap <> 0 *)
+      split; [exact (last_ev_app _ _ Hl Hlast)|]. split; [exact Hfin|]. split; [rewrite Hai'; exact Hai|].
+      split; [exact Hub|]. split; [exact Hsn'|]. split; [exact Hbv0|]. split; [exact Hz0'|].
+      intros _. right. rewrite <- Hw'. exact Hw0.
+    + (* finish_started, pending <> 0 *)
+      split; [exact (last_ev_app _ _ Hl Hlast)|]. split; [exact Hfin|]. split; [rewrite Hai'; exact Hai|].
+      split; [exact Hub|]. split; [exact Hsn'|]. split; [exact Hbv0|]. split; [exact Hz0'|].
+      intros _. left. exact Hp0.
+    + (* finish_done, room left *)
+      split; [exact (last_ev_app _ _ Hl Hlast)|]. split; [exact Hfin|]. split; [rewrite Hai'; exact Hai|].
+      split; [exact Hub|]. split; [exact Hsn'|].
+      split; [|exact Hbv0]. destruct Hc2 as (_ & _ & Ho' & _). exact (quiet_of_flush s' z' Ho' Hbv Hpz Hn0').
+  - change (d_sym_next s1) with (d_sym_next s).
+    destruct (Z.eqb_spec (d_sym_next s) 0) as [Hs0|Hs0]; cbn [negb].
+    + (* nothing tallied: block_done at once *)
+      assert (Hnil : syms = []) by (destruct syms; [reflexivity|rewrite Zlength_cons in Hsn; pose proof (Zlength_nonneg syms); lia]).
+      subst syms. rewrite blk_len_nil in Hbl.
+      do 4 eexists. split; [reflexivity|]. split; [exact Hc1|]. cbn [hbpost].
+      split; [exact Hl|]. split; [exact Hnf|]. split; [exact Hnfin|]. split; [exact Hai|].
+      split; [unfold ub; unfold s1; autorewrite with hproj; lia|]. split; [exact Hq|]. exact Hs0.
+    + destruct (Hfbw s1 z flush syms 0 HS Hz Ha Hfl ltac:(lia) (fun H => ltac:(discriminate H))
+                  (fun _ => or_intror (conj Hnf Hnfin)))
+        as (s' & z' & e & E & Hc' & Hlast & Hz' & Had & Hai' & Hla' & Hss & Hbs & Hsn' & Hbv & _ & Hpz).
+      assert (Hc2 := hcrel_trans _ _ _ _ _ _ _ _ _ Hz0 Ha0 Hc1 Hc').
+      assert (Hub : ub s' = 0) by (unfold ub; rewrite Hla', Hss, Hbs; unfold s1; autorewrite with hproj; lia).
+      unfold c_flush_block. rewrite E. cbn [bind].
+      destruct (Z.eqb_spec (z_avail_out z') 0) as [Hz0'|Hn0']; cbn [andb orb negb Z.eqb Pos.eqb];
+        do 4 eexists; (split; [reflexivity|]); (split; [exact Hc2|]); cbn [hbpost].
+      * split; [exact (Forall_last0_app _ _ Hl Hlast)|]. split; [exact Hbv|]. right; left; exact Hz0'.
+      * split; [exact (Forall_last0_app _ _ Hl Hlast)|]. split; [exact Hnf|]. split; [exact Hnfin|].
+        split; [rewrite Hai'; exact Hai|]. split; [exact Hub|].
+        split; [destruct Hc2 as (_ & _ & Ho' & _); exact (quiet_of_flush s' z' Ho' Hbv Hpz Hn0')|exact Hsn'].
+Qed.

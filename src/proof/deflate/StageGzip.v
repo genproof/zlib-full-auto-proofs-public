@@ -1,0 +1,810 @@
+(** * deflate(): the gzip header (e10, [if (s->status == GZIP_STATE) { ... }]) against its model (DeflateKit.v). *)
+Require Import VST.floyd.proofauto.
+Require Import VST.floyd.library.
+Require Import Zlib.proof.deflate.DCS.
+Require Import Zlib.proof.deflate.DeflateKit.
+Require Import Zlib.proof.deflate.Arith.
+Require Zlib.units.Crc32 Zlib.proof.crc32.Combine Zlib.proof.adler32.Bytes.
+#[export] Existing Instance DCS.CS.
+Open Scope cmodel_scope.
+
+(** ** put_byte of a list on the output part of the state *)
+Fixpoint c_put_bytes (om : cout) (l : list Z) : option cout :=
+  match l with
+  | [] => Some om
+  | c :: l => let* om := c_put_byte om c in c_put_bytes om l
+  end.
+
+Lemma c_dput_bytes_inv s l s' : c_dput_bytes s l = Some s' ->
+  exists om, c_put_bytes (d_out s) l = Some om /\ s' = set_d_out s om.
+Proof.
+  revert s; induction l as [|c l IH]; intros s H; cbn [c_dput_bytes c_put_bytes] in H |- *.
+  - inversion H; subst s'. exists (d_out s). rewrite set_d_out_self. auto.
+  - unfold c_dput_byte in H. inv_bind H. inv_bind Ha. inversion Ha; subst x; clear Ha.
+    rewrite Ha0. cbn [bind]. destruct (IH _ H) as [om [E1 E2]].
+    rewrite d_out_set_d_out in E1. exists om. rewrite E2, set_d_out_out. auto.
+Qed.
+
+(** The fields after the C store of one put_byte, folded back into [out_at] of the model's result. *)
+Lemma out_at_put_byte_x om c x sp pbp : c_put_byte om c = Some x -> out_ok (fst om) (snd om) ->
+  @field_at DCS.CS Ews t_ds (DOT _pending) (Vlong (Int64.repr (o_pending (fst om) + 1))) sp *
+  @field_at DCS.CS Ews t_ds (DOT _pending_buf) pbp sp *
+  @field_at DCS.CS Ews t_ds (DOT _bi_buf) (vi (o_bi_buf (fst om))) sp *
+  @field_at DCS.CS Ews t_ds (DOT _bi_valid) (vi (o_bi_valid (fst om))) sp *
+  @field_at DCS.CS Ews t_ds (DOT _bi_used) (vi (o_bi_used (fst om))) sp *
+  @data_at DCS.CS Ews (tarray tuchar (Zlength (o_buf (fst om))))
+     (upd_Znth (o_pending (fst om)) (pb_vals (o_buf (fst om)) (snd om)) (Vint (Int.repr (u8 c)))) pbp
+  |-- out_at (fst x) (snd x) sp pbp.
+Proof.
+  intros H Hok. destruct (c_put_byte_inv' _ _ _ H) as [Hr ->].
+  apply (out_at_put_byte (fst om) (snd om) c sp pbp Hok Hr).
+Qed.
+
+Lemma c_put_byte_range om c x : c_put_byte om c = Some x -> 0 <= o_pending (fst om) < Zlength (o_buf (fst om)).
+Proof. intros H. apply (c_put_byte_inv' _ _ _ H). Qed.
+
+(** [out_at] opened, with the pending field's value as the forward steps need it. *)
+Lemma out_at_open o m sp pbp : out_at o m sp pbp =
+  (!! out_ok o m &&
+  (@field_at DCS.CS Ews t_ds (DOT _pending) (Vlong (Int64.repr (o_pending o))) sp *
+   @field_at DCS.CS Ews t_ds (DOT _pending_buf) pbp sp *
+   @field_at DCS.CS Ews t_ds (DOT _bi_buf) (vi (o_bi_buf o)) sp *
+   @field_at DCS.CS Ews t_ds (DOT _bi_valid) (vi (o_bi_valid o)) sp *
+   @field_at DCS.CS Ews t_ds (DOT _bi_used) (vi (o_bi_used o)) sp *
+   @data_at DCS.CS Ews (tarray tuchar (Zlength (o_buf o))) (pb_vals (o_buf o) m) pbp))%logic.
+Proof. reflexivity. Qed.
+
+(** The states the stage ends in: the output changed, pending_out, gzindex, status and last_flush set. *)
+Definition gen_st (s : dstate) (o : cout) (po gi st lf : Z) : dstate :=
+  set_d_last_flush (set_d_status (set_d_gzindex (set_d_po (set_d_out s o) po) gi) st) lf.
+
+Section GenSame.
+Variables (s : dstate) (o : cout) (po gi st lf : Z) (p : dptrs).
+Let s' := gen_st s o po gi st lf.
+Lemma gs_win : win_at s' p = win_at s p. Proof. reflexivity. Qed.
+Lemma gs_hash : hash_at s' p = hash_at s p. Proof. reflexivity. Qed.
+Lemma gs_match : match_at s' p = match_at s p. Proof. reflexivity. Qed.
+Lemma gs_cfg : cfg_at s' p = cfg_at s p. Proof. reflexivity. Qed.
+Lemma gs_ltree : tr_ltree (d_tr s') = tr_ltree (d_tr s). Proof. reflexivity. Qed.
+Lemma gs_dtree : tr_dtree (d_tr s') = tr_dtree (d_tr s). Proof. reflexivity. Qed.
+Lemma gs_sym : sym_at (d_tr s') = sym_at (d_tr s). Proof. reflexivity. Qed.
+Lemma gs_dtype : dtype_at (d_tr s') = dtype_at (d_tr s). Proof. reflexivity. Qed.
+Lemma gs_rest : trees_rest (d_tr s') = trees_rest (d_tr s). Proof. reflexivity. Qed.
+Lemma gs_lvl : lvl_at (d_tr s') = lvl_at (d_tr s). Proof. reflexivity. Qed.
+End GenSame.
+
+Lemma dstate_ranges_gen s o po gi st lf : dstate_ranges s -> 0 <= po -> s32_ok st -> u64_ok gi -> s32_ok lf ->
+  dstate_ranges (gen_st s o po gi st lf).
+Proof. intros H Hpo Hst Hgi Hlf. destruct s. unfold dstate_ranges in *. cbn in *. tauto. Qed.
+
+(** Back to [dfull] from the opened pieces, for a state [gen_st]. *)
+Lemma dfull_close_gen s z0 z ob m po gi st lf p pin pout ish R msgv gv :
+  strm_ranges z -> msg_ok (z_msg z) msgv -> z_in z = z_in z0 -> 0 <= po -> dstate_ranges s -> readable_share ish ->
+  s32_ok st -> u64_ok gi -> s32_ok lf ->
+  strm_at z (p_s p) (p_strm p) pin pout msgv gv * out_space z pout R *
+  @field_at DCS.CS Ews t_ds (DOT _pending_out) (offset_val po (p_pbuf p)) (p_s p) *
+  out_at ob m (p_s p) (p_pbuf p) *
+  ltree_at (tr_ltree (d_tr s)) (p_s p) * dtree_at (tr_dtree (d_tr s)) (p_s p) *
+  sym_at (d_tr s) (p_s p) (p_pbuf p) * dtype_at (d_tr s) (p_s p) (p_strm p) * lvl_at (d_tr s) (p_s p) *
+  trees_rest (d_tr s) (p_s p) (p_strm p) gv *
+  win_at s p * hash_at s p * match_at s p * cfg_at s p *
+  @field_at DCS.CS Ews t_ds (DOT _status) (vi st) (p_s p) *
+  @field_at DCS.CS Ews t_ds (DOT _pending_buf_size) (vl (d_pending_buf_size s)) (p_s p) *
+  @field_at DCS.CS Ews t_ds (DOT _wrap) (vi (d_wrap s)) (p_s p) *
+  @field_at DCS.CS Ews t_ds (DOT _gzhead) (p_gzhead p) (p_s p) *
+  @field_at DCS.CS Ews t_ds (DOT _gzindex) (vl gi) (p_s p) *
+  @field_at DCS.CS Ews t_ds (DOT _method) (vi (d_method s)) (p_s p) *
+  @field_at DCS.CS Ews t_ds (DOT _last_flush) (vi lf) (p_s p) *
+  in_obj ish z0 pin
+  |-- dfull (gen_st s (ob, m) po gi st lf) z p pin pout ish R msgv gv.
+Proof.
+  intros Hz Hm Ein Hpo Hs Hish Hst Hgi Hlf.
+  pose proof (dstate_ranges_gen s (ob, m) po gi st lf Hs Hpo Hst Hgi Hlf) as Hd.
+  unfold dfull, dstate_at, stat_at. rewrite trees_at_open. unfold d_trm. cbn [fst snd].
+  unfold in_obj. rewrite Ein.
+  rewrite gs_win, gs_hash, gs_match, gs_cfg, gs_ltree, gs_dtree, gs_sym, gs_dtype, gs_rest, gs_lvl.
+  change (tr_out (d_tr (gen_st s (ob, m) po gi st lf))) with ob.
+  change (d_pbm (gen_st s (ob, m) po gi st lf)) with m.
+  change (d_po (gen_st s (ob, m) po gi st lf)) with po.
+  change (d_status (gen_st s (ob, m) po gi st lf)) with st.
+  change (d_gzindex (gen_st s (ob, m) po gi st lf)) with gi.
+  change (d_last_flush (gen_st s (ob, m) po gi st lf)) with lf.
+  change (d_pending_buf_size (gen_st s (ob, m) po gi st lf)) with (d_pending_buf_size s).
+  change (d_wrap (gen_st s (ob, m) po gi st lf)) with (d_wrap s).
+  change (d_method (gen_st s (ob, m) po gi st lf)) with (d_method s).
+  entailer!.
+Qed.
+
+Lemma deflate_globals_fold gv :
+  trees_globals gv * errmsg_at gv *
+  @data_at DCS.CS Ers (tarray t_config 10) (config_vals gv) (gv _configuration_table) *
+  @data_at DCS.CS Ers (tarray tschar 6) (map vi [49; 46; 51; 46; 50; 0]) (gv _my_version) *
+  Zlib.proof.crc32.Spec.crc_table_at Ers gv |-- deflate_globals gv.
+Proof. unfold deflate_globals. cancel. Qed.
+
+Lemma gen_eq_flush s o1 o2 o3 st po :
+  set_d_po (set_d_out (set_d_status (set_d_out (set_d_out s o1) o2) st) o3) po =
+  gen_st s o3 po (d_gzindex s) st (d_last_flush s).
+Proof. destruct s as [? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? t ?]; destruct t; reflexivity. Qed.
+
+Lemma gen_eq_ret s o1 o2 o3 st po lf :
+  set_d_last_flush (set_d_po (set_d_out (set_d_status (set_d_out (set_d_out s o1) o2) st) o3) po) lf =
+  gen_st s o3 po (d_gzindex s) st lf.
+Proof. destruct s as [? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? t ?]; destruct t; reflexivity. Qed.
+
+Lemma out_at_fold o m sp pbp : out_ok o m ->
+  @field_at DCS.CS Ews t_ds (DOT _pending) (Vlong (Int64.repr (o_pending o))) sp *
+  @field_at DCS.CS Ews t_ds (DOT _pending_buf) pbp sp *
+  @field_at DCS.CS Ews t_ds (DOT _bi_buf) (vi (o_bi_buf o)) sp *
+  @field_at DCS.CS Ews t_ds (DOT _bi_valid) (vi (o_bi_valid o)) sp *
+  @field_at DCS.CS Ews t_ds (DOT _bi_used) (vi (o_bi_used o)) sp *
+  @data_at DCS.CS Ews (tarray tuchar (Zlength (o_buf o))) (pb_vals (o_buf o) m) pbp
+  |-- out_at o m sp pbp.
+Proof. intros. rewrite out_at_open. entailer!. Qed.
+
+(** [return c;] against an abstract postcondition (floyd's forward refuses it). *)
+Lemma semax_ret_const {Espec: OracleKind} (P: environ -> mpred) (R: ret_assert) (r: Z) (e: expr):
+  (forall rho, eval_expr (Ecast e tint) rho = Vint (Int.repr r)) ->
+  ENTAIL Delta_df, P |-- tc_expr Delta_df (Ecast e tint) ->
+  ENTAIL Delta_df, P |-- RA_return R (Some (Vint (Int.repr r))) ->
+  semax Delta_df P (Sreturn (Some e)) R.
+Proof.
+  intros He Htc HP.
+  eapply semax_pre; [ | apply semax_return ].
+  change (ret_type Delta_df) with tint.
+  apply andp_right; [ exact Htc | ].
+  intro rho. specialize (HP rho). cbv beta in HP.
+  assert (E: cast_expropt (Some e) tint rho = Some (Vint (Int.repr r))).
+  { change (cast_expropt (Some e) tint rho) with (Some (eval_expr (Ecast e tint) rho)). rewrite He. reflexivity. }
+  change (liftx (RA_return R) (cast_expropt (Some e) tint) id rho)
+    with (RA_return R (cast_expropt (Some e) tint rho) (id rho)).
+  rewrite E. exact HP.
+Qed.
+
+(** ** The user's gz_header: opened for the field reads, the pointer facts of extra / name / comment *)
+Definition optp (o : option (list Z)) (q : val) : Prop :=
+  match o with None => q = nullval | Some _ => isptr q end.
+
+Definition gzh_more (sh : share) (hp : val) : mpred :=
+  ((EX v : val, @field_at DCS.CS sh t_gzh (DOT _xflags) v hp) *
+   (EX v : val, @field_at DCS.CS sh t_gzh (DOT _extra_max) v hp) *
+   (EX v : val, @field_at DCS.CS sh t_gzh (DOT _name_max) v hp) *
+   (EX v : val, @field_at DCS.CS sh t_gzh (DOT _comm_max) v hp) *
+   (EX v : val, @field_at DCS.CS sh t_gzh (DOT _done) v hp))%logic.
+
+Lemma opt_obj_optp sh o q : opt_obj sh o q |-- !! optp o q.
+Proof.
+  destruct o as [b|]; unfold opt_obj, optp.
+  - destruct (Zlength b =? 0); entailer!.
+  - entailer!.
+Qed.
+
+Lemma gzh_at_open sh h hp xp np cp :
+  gzh_at sh h hp xp np cp |--
+  (!! (readable_share sh /\ gzh_ok h /\ optp (gz_extra h) xp /\ optp (gz_name h) np /\ optp (gz_comment h) cp) &&
+   (@field_at DCS.CS sh t_gzh (DOT _text) (vi (gz_text h)) hp *
+    @field_at DCS.CS sh t_gzh (DOT _time) (vl (gz_time h)) hp *
+    @field_at DCS.CS sh t_gzh (DOT _os) (vi (gz_os h)) hp *
+    @field_at DCS.CS sh t_gzh (DOT _extra) xp hp *
+    @field_at DCS.CS sh t_gzh (DOT _extra_len) (vi (gz_extra_len h)) hp *
+    @field_at DCS.CS sh t_gzh (DOT _name) np hp *
+    @field_at DCS.CS sh t_gzh (DOT _comment) cp hp *
+    @field_at DCS.CS sh t_gzh (DOT _hcrc) (vi (gz_hcrc h)) hp *
+    gzh_more sh hp *
+    opt_obj sh (gz_extra h) xp * opt_obj sh (gz_name h) np * opt_obj sh (gz_comment h) cp))%logic.
+Proof.
+  unfold gzh_at, gzh_more. Intros.
+  sep_apply (opt_obj_optp sh (gz_extra h) xp). sep_apply (opt_obj_optp sh (gz_name h) np).
+  sep_apply (opt_obj_optp sh (gz_comment h) cp). Intros. entailer!.
+Qed.
+
+Lemma gzh_at_fold sh h hp xp np cp : readable_share sh -> gzh_ok h ->
+  @field_at DCS.CS sh t_gzh (DOT _text) (vi (gz_text h)) hp *
+  @field_at DCS.CS sh t_gzh (DOT _time) (vl (gz_time h)) hp *
+  @field_at DCS.CS sh t_gzh (DOT _os) (vi (gz_os h)) hp *
+  @field_at DCS.CS sh t_gzh (DOT _extra) xp hp *
+  @field_at DCS.CS sh t_gzh (DOT _extra_len) (vi (gz_extra_len h)) hp *
+  @field_at DCS.CS sh t_gzh (DOT _name) np hp *
+  @field_at DCS.CS sh t_gzh (DOT _comment) cp hp *
+  @field_at DCS.CS sh t_gzh (DOT _hcrc) (vi (gz_hcrc h)) hp *
+  gzh_more sh hp *
+  opt_obj sh (gz_extra h) xp * opt_obj sh (gz_name h) np * opt_obj sh (gz_comment h) cp
+  |-- gzh_at sh h hp xp np cp.
+Proof. intros. unfold gzh_at, gzh_more. entailer!. Qed.
+
+(** [q == Z_NULL] is defined for the extra / name / comment pointers. *)
+Lemma opt_obj_tc sh o q Q : readable_share sh ->
+  opt_obj sh o q * Q |-- denote_tc_test_eq q (Vlong (Int64.repr 0)).
+Proof.
+  intros Hsh. apply denote_tc_test_eq_split; [|apply valid_pointer_null].
+  apply sepcon_valid_pointer1.
+  destruct o as [b|]; unfold opt_obj.
+  - apply andp_left2. destruct (Zlength b =? 0) eqn:E.
+    + apply sepcon_valid_pointer2. apply malloc_token_valid_pointer. simpl. lia.
+    + rewrite sepcon_emp. apply data_at_valid_ptr; [apply readable_nonidentity; auto|].
+      apply Z.eqb_neq in E. pose proof (Zlength_nonneg b). simpl. rewrite Z.max_r by lia. lia.
+  - Intros. subst. apply valid_pointer_null.
+Qed.
+
+(** ** crc32_z over pending_buf: its spec is stated in crc32.c's compspecs *)
+#[local] Instance CCE_crc32_d : change_composite_env Zlib.units.Crc32.CS DCS.CS.
+Proof. make_cs_preserve Zlib.units.Crc32.CS DCS.CS. Defined.
+
+Lemma da_cs_crc sh n (v : list val) q :
+  @data_at DCS.CS sh (tarray tuchar n) v q = @data_at Zlib.units.Crc32.CS sh (tarray tuchar n) v q.
+Proof.
+  assert (E : @data_at Zlib.units.Crc32.CS sh (tarray tuchar n) v = @data_at DCS.CS sh (tarray tuchar n) v).
+  { apply (@data_at_change_composite _ _ CCE_crc32_d); [apply JMeq_refl | reflexivity]. }
+  rewrite E. reflexivity.
+Qed.
+
+Lemma pb_vals_read buf m len d : Zlength m = Zlength buf -> mb_read (mkMB buf m) 0 len = Some d ->
+  sublist 0 len (pb_vals buf m) = Zlib.proof.adler32.Bytes.bytes_rep d.
+Proof.
+  intros Hm H. pose proof (mb_read_length _ _ _ _ H) as Hl.
+  unfold mb_read, mb_definedb in H. cbn [mb_val mb_def] in H.
+  case_if_as H E; [|discriminate]. inversion H; subst d; clear H.
+  repeat rewrite andb_true_iff in E. destruct E as [E1 [[E2 E3] E4]].
+  apply Z.leb_le in E1. apply Z.leb_le in E3.
+  rewrite Zlength_sublist in Hl by lia.
+  apply Znth_eq_ext.
+  - unfold Zlib.proof.adler32.Bytes.bytes_rep. rewrite Zlength_map, !Zlength_sublist by (rewrite ?Zlength_pb_vals; lia). lia.
+  - intros i Hi. rewrite Zlength_sublist in Hi by (rewrite ?Zlength_pb_vals; lia).
+    unfold Zlib.proof.adler32.Bytes.bytes_rep. rewrite Znth_map by (rewrite Zlength_sublist; lia).
+    rewrite !Znth_sublist by lia. rewrite Znth_pb_vals by lia.
+    rewrite forallb_forall in E4.
+    rewrite (E4 (i + 0)); [reflexivity|]. apply in_map_iff. exists (Z.to_nat i). split; [lia|].
+    apply in_seq. lia.
+Qed.
+
+Lemma opt_obj_vp sh o q : readable_share sh -> opt_obj sh o q |-- valid_pointer q.
+Proof.
+  intros Hsh. destruct o as [b|]; unfold opt_obj.
+  - apply andp_left2. destruct (Zlength b =? 0) eqn:E.
+    + apply sepcon_valid_pointer2. apply malloc_token_valid_pointer. simpl. lia.
+    + rewrite sepcon_emp. apply data_at_valid_ptr; [apply readable_nonidentity; auto|].
+      apply Z.eqb_neq in E. pose proof (Zlength_nonneg b). simpl. rewrite Z.max_r by lia. lia.
+  - Intros. subst. apply valid_pointer_null.
+Qed.
+
+(** Find the SEP item that gives [valid_pointer q] in a left-nested [*]. *)
+Ltac vp_find lem :=
+  first [ apply sepcon_valid_pointer2; apply lem | apply sepcon_valid_pointer1; vp_find lem | apply lem ].
+
+Lemma optp_tc o q : optp o q -> tc_val (tptr tuchar) q.
+Proof. destruct o; simpl; intros H; [destruct q; try contradiction; simpl; auto | subst; simpl; auto]. Qed.
+
+(** The load of a gz_header pointer field. *)
+Ltac tc_optp q := go_lower; apply prop_right;
+  match goal with Hq : optp _ q |- _ => exact (optp_tc _ _ Hq) end.
+
+(** [Int.repr a = Int.zero] for a signed [a] in range: [a = 0]. *)
+Ltac int_zero := match goal with Hx : Int.repr ?a = Int.zero |- _ =>
+  change Int.zero with (Int.repr 0) in Hx; apply repr_inj_signed in Hx; [|rep_lia|rep_lia] end.
+
+(** ** Byte values of the header fields *)
+Lemma zmm64 a : 0 <= a <= Int64.max_unsigned -> Int64.Z_mod_modulus a = a.
+Proof. intros. rewrite Int64.Z_mod_modulus_eq. apply Z.mod_small. rep_lia. Qed.
+
+Lemma shiftr_le a k : 0 <= a -> 0 <= k -> 0 <= Z.shiftr a k <= a.
+Proof.
+  intros Ha Hk. rewrite Z.shiftr_div_pow2 by lia. split; [apply Z.div_pos; [lia | apply Z.pow_pos_nonneg; lia]|].
+  apply Z.div_le_upper_bound; [apply Z.pow_pos_nonneg; lia|].
+  assert (1 <= 2 ^ k) by (apply Z.pow_le_mono_r with (a := 2) (b := 0) in Hk; [simpl in Hk; lia | lia]). nia.
+Qed.
+
+Lemma land255_le a : 0 <= a -> 0 <= Z.land a 255 <= 255.
+Proof.
+  intros. change 255 with (Z.ones 8). rewrite Z.land_ones by lia.
+  pose proof (Z.mod_pos_bound a (2 ^ 8) ltac:(reflexivity)). change (2 ^ 8) with 256 in *. change (Z.ones 8) with 255. lia.
+Qed.
+
+Ltac zmm_nonneg := first [ apply Z.shiftr_nonneg; rep_lia | rep_lia ].
+Ltac zmm_range :=
+  lazymatch goal with
+  | |- 0 <= Z.land ?b 255 <= _ => let Hb := fresh in assert (Hb : 0 <= b) by zmm_nonneg;
+                                    pose proof (land255_le b Hb); rep_lia
+  | |- 0 <= Z.shiftr ?b ?k <= _ => pose proof (shiftr_le b k ltac:(rep_lia) ltac:(rep_lia)); rep_lia
+  | _ => rep_lia
+  end.
+(** Remove the [Int64.Z_mod_modulus] of in-range values, innermost first. *)
+Ltac zmm_norm :=
+  repeat match goal with
+  | |- context [Int64.Z_mod_modulus ?a] =>
+      lazymatch a with context [Int64.Z_mod_modulus _] => fail | _ => rewrite (zmm64 a) by zmm_range end
+  end.
+
+Lemma shru64_eq t k : 0 <= t <= Int64.max_unsigned -> 0 <= k < 64 ->
+  Int64.unsigned (Int64.shru (Int64.repr t) (Int64.repr (Int.unsigned (Int.repr k)))) = Z.shiftr t k.
+Proof.
+  intros Ht Hk. rewrite (Int.unsigned_repr k) by rep_lia. unfold Int64.shru.
+  rewrite (Int64.unsigned_repr t) by rep_lia. rewrite (Int64.unsigned_repr k) by rep_lia.
+  pose proof (shiftr_le t k ltac:(lia) ltac:(lia)). apply Int64.unsigned_repr. rep_lia.
+Qed.
+
+Lemma byte_shru8 x : 0 <= x <= Int.max_unsigned ->
+  Int.and (Int.shru (Int.repr x) (Int.repr 8)) (Int.repr 255) = Int.repr (Z.land (Z.shiftr x 8) 255).
+Proof.
+  intros. unfold Int.shru. rewrite (Int.unsigned_repr x) by rep_lia. rewrite (Int.unsigned_repr 8) by rep_lia.
+  apply and_repr32.
+Qed.
+
+Lemma c_put_byte_len om c x : c_put_byte om c = Some x ->
+  Zlength (o_buf (fst x)) = Zlength (o_buf (fst om)) /\ o_pending (fst x) = o_pending (fst om) + 1.
+Proof.
+  intros H. destruct (c_put_byte_inv' _ _ _ H) as [_ ->]. cbn. rewrite Zlength_upd_Znth. auto.
+Qed.
+
+Lemma c_put_bytes_len om l om' : c_put_bytes om l = Some om' -> Zlength (o_buf (fst om')) = Zlength (o_buf (fst om)).
+Proof.
+  revert om; induction l as [|c l IH]; intros om H; cbn [c_put_bytes] in H.
+  - inversion H; auto.
+  - inv_bind H. destruct (c_put_byte_len _ _ _ Ha) as [E _]. rewrite (IH _ H). exact E.
+Qed.
+
+Lemma c_put_bytes_ok om l om' : c_put_bytes om l = Some om' -> out_ok (fst om) (snd om) -> out_ok (fst om') (snd om').
+Proof.
+  revert om; induction l as [|c l IH]; intros om H Hok; cbn [c_put_bytes] in H.
+  - inversion H; subst; auto.
+  - inv_bind H. apply (IH _ H). destruct (c_put_byte_inv' _ _ _ Ha) as [Hr ->]. apply out_ok_put_byte; auto.
+Qed.
+
+Lemma mb_read_le b lo len l : mb_read b lo len = Some l -> lo + len <= Zlength (mb_val b).
+Proof.
+  unfold mb_read, mb_definedb. intros H. case_if_as H E; [|discriminate].
+  repeat rewrite andb_true_iff in E. destruct E as [E1 [[E2 E3] E4]]. apply Z.leb_le in E3. lia.
+Qed.
+
+Lemma gen_eq_hdr1 s o gi st :
+  set_d_status (set_d_gzindex (set_d_out s o) gi) st = gen_st s o (d_po s) gi st (d_last_flush s).
+Proof. destruct s as [? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? t ?]; destruct t; reflexivity. Qed.
+
+Lemma gen_eq_hdr2 s o1 o2 gi st :
+  set_d_status (set_d_gzindex (set_d_out (set_d_out s o1) o2) gi) st = gen_st s o2 (d_po s) gi st (d_last_flush s).
+Proof. destruct s as [? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? t ?]; destruct t; reflexivity. Qed.
+
+Lemma gen_eq_hdr3 s o1 o2 o3 gi st :
+  set_d_status (set_d_gzindex (set_d_out (set_d_out (set_d_out s o1) o2) o3) gi) st =
+  gen_st s o3 (d_po s) gi st (d_last_flush s).
+Proof. destruct s as [? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? ? t ?]; destruct t; reflexivity. Qed.
+
+Lemma bytes_is_bytes l : Forall (fun x => 0 <= x < 256) l -> Zlib.proof.adler32.Bytes.is_bytes l.
+Proof. intros H. unfold Zlib.proof.adler32.Bytes.is_bytes. eapply Forall_impl; [|exact H]. intros a Ha. rep_lia. Qed.
+
+(** The signed-overflow check of [t36 + t37 + t38 + t39 + t40] (the flags byte). *)
+Ltac flags_tc h :=
+  go_lower; rewrite !add_repr;
+  assert (0 <= (if gz_text h =? 0 then 0 else 1) <= 1) by (destruct (gz_text h =? 0); lia);
+  assert (0 <= (if gz_hcrc h =? 0 then 0 else 2) <= 2) by (destruct (gz_hcrc h =? 0); lia);
+  assert (0 <= (match gz_extra h with Some _ => 4 | None => 0 end) <= 4) by (destruct (gz_extra h); lia);
+  assert (0 <= (match gz_name h with Some _ => 8 | None => 0 end) <= 8) by (destruct (gz_name h); lia);
+  assert (0 <= (match gz_comment h with Some _ => 16 | None => 0 end) <= 16) by (destruct (gz_comment h); lia);
+  rewrite !Int.signed_repr by rep_lia;
+  repeat apply andp_right; try apply TT_right; apply prop_right; rep_lia.
+
+(** One put_byte: open [out_at], the C steps, fold the result. *)
+Ltac pb_open Hp :=
+  let Hr := fresh "Hr" in pose proof (c_put_byte_range _ _ _ Hp) as Hr;
+  rewrite out_at_open; Intros.
+Ltac pb_close Hp :=
+  try (change (Int.signed (Int.repr 1)) with 1; rewrite add64_repr);
+  norm_byte_val;
+  match type of Hp with c_put_byte ?om ?c = Some ?x =>
+    match goal with Hok : out_ok (fst om) (snd om) |- _ =>
+    match goal with |- context [@field_at _ _ _ (DOT _pending_buf) ?pbp ?sp] =>
+      sep_apply (out_at_put_byte_x om c x sp pbp Hp Hok) end end end.
+Ltac pb_const Hp := pb_open Hp; forward; forward; forward; forward; pb_close Hp.
+
+(** ** The two branches of [if (s->gzhead == Z_NULL)], as separate lemmas (one Qed would take > 600 s) *)
+Definition gz_tail : statement := ltac:(
+  let t := eval cbv [S_gzip nth_stmt df_body f_deflate fn_body] in S_gzip in
+  lazymatch t with Ssequence _ (Sifthenelse _ (Ssequence _ (Ssequence _ (Ssequence _ (Ssequence _ ?T)))) _) => exact T end).
+
+Definition gz_mid_pre (p : dptrs) (pin pout : val) (ish : share) (R : list val) (msgv : val) (gv : globals)
+    (flush : Z) (s : dstate) (z : strm) (om1 : cout) (X1 X2 : mpred) : environ -> mpred :=
+  PROPx [] (LOCALx [temp _strm (p_strm p); temp _s (p_s p); temp _flush (vi flush); gvars gv]
+  (SEPx [out_at (fst om1) (snd om1) (p_s p) (p_pbuf p);
+         strm_at (set_z_adler z 0) (p_s p) (p_strm p) pin pout msgv gv;
+         Zlib.proof.crc32.Spec.crc_table_at Ers gv; out_space z pout R;
+         @field_at DCS.CS Ews t_ds (DOT _pending_out) (offset_val (d_po s) (p_pbuf p)) (p_s p);
+         ltree_at (tr_ltree (d_tr s)) (p_s p); dtree_at (tr_dtree (d_tr s)) (p_s p);
+         sym_at (d_tr s) (p_s p) (p_pbuf p); dtype_at (d_tr s) (p_s p) (p_strm p); lvl_at (d_tr s) (p_s p);
+         trees_rest (d_tr s) (p_s p) (p_strm p) gv; win_at s p; hash_at s p; match_at s p; cfg_at s p;
+         @field_at DCS.CS Ews t_ds (DOT _status) (vi (d_status s)) (p_s p);
+         @field_at DCS.CS Ews t_ds (DOT _pending_buf_size) (vl (d_pending_buf_size s)) (p_s p);
+         @field_at DCS.CS Ews t_ds (DOT _wrap) (vi (d_wrap s)) (p_s p);
+         @field_at DCS.CS Ews t_ds (DOT _gzhead) (p_gzhead p) (p_s p);
+         @field_at DCS.CS Ews t_ds (DOT _gzindex) (vl (d_gzindex s)) (p_s p);
+         @field_at DCS.CS Ews t_ds (DOT _method) (vi (d_method s)) (p_s p);
+         @field_at DCS.CS Ews t_ds (DOT _last_flush) (vi (d_last_flush s)) (p_s p);
+         in_obj ish z pin; trees_globals gv; errmsg_at gv;
+         @data_at DCS.CS Ers (tarray t_config 10) (config_vals gv) (gv _configuration_table);
+         @data_at DCS.CS Ers (tarray tschar 6) (map vi [49; 46; 51; 46; 50; 0]) (gv _my_version); X1; X2])).
+
+Definition gz_mid_post (p : dptrs) (pin pout : val) (ish : share) (R : list val) (gv : globals) (flush : Z)
+    (z : strm) (s' : dstate) (z' : strm) (o : option Z) (X1 X2 : mpred) : ret_assert :=
+  overridePost (EX msgv' : val, PROP (o = None)
+    LOCAL (temp _strm (p_strm p); temp _s (p_s p); temp _flush (vi flush); gvars gv)
+    SEP (dfull s' z' p pin pout ish (rest_after z z' R) msgv' gv; deflate_globals gv; X1; X2))
+   (stage_post p pin pout ish R gv flush z (X1 * X2)%logic (s', z', o)).
+
+
+Lemma gz_nohdr_ok {Espec : OracleKind} p pin pout ish R msgv gv flush s z hx W s' z' o om1 oa ob
+  (Hfl : 0 <= flush <= 5) (Hpa : c_put_byte (d_out s) 31 = Some oa) (Hpb : c_put_byte oa 139 = Some ob)
+  (Hpc : c_put_byte ob 8 = Some om1) (Egz : d_gzhead s = None) (Hc : c_deflate_gzip_header s z = Some (s', z', o)) (Hgz : p_gzhead p = nullval)
+  (H : strm_ranges z) (H0 : msg_ok (z_msg z) msgv) (H1 : dstate_ranges s) (H2 : readable_share ish)
+  (H3 : Int.repr (d_status s) = Int.repr 57) (Est : d_status s = GZIP_STATE)
+  (Hr : 0 <= o_pending (fst (d_out s)) < Zlength (o_buf (fst (d_out s)))) (H4 : out_ok (fst (d_out s)) (snd (d_out s)))
+  (Hr0 : 0 <= o_pending (fst oa) < Zlength (o_buf (fst oa))) (H5 : out_ok (fst oa) (snd oa))
+  (Hr1 : 0 <= o_pending (fst ob) < Zlength (o_buf (fst ob))) (H6 : out_ok (fst ob) (snd ob)) :
+  semax Delta_df (gz_mid_pre p pin pout ish R msgv gv flush s z om1 (hdr_res None (p_gzhead p) hx) W) gz_tail
+    (gz_mid_post p pin pout ish R gv flush z s' z' o (hdr_res None (p_gzhead p) hx) W).
+Proof.
+  unfold c_deflate_gzip_header in Hc. rewrite Est, Z.eqb_refl in Hc.
+  inv_bind Hc. apply c_dput_bytes_inv in Ha. destruct Ha as [om [Hq ->]].
+  cbn [c_put_bytes] in Hq. rewrite Hpa in Hq. cbn [bind] in Hq. rewrite Hpb in Hq. cbn [bind] in Hq.
+  rewrite Hpc in Hq. cbn [bind c_put_bytes] in Hq. inversion Hq; subst om; clear Hq.
+  change (d_gzhead (set_d_out s om1)) with (d_gzhead s) in Hc. rewrite Egz in Hc. cbn beta iota in Hc.
+  unfold gz_mid_pre, gz_mid_post, gz_tail, stage_post. cbv beta iota.
+      forward. { rewrite Hgz. entailer!. }
+      inv_bind Hc. apply c_dput_bytes_inv in Ha. destruct Ha as [om2 [Hp2 ->]]. rewrite d_out_set_d_out in Hp2.
+      change (xfl_byte (set_d_out s om1)) with (xfl_byte s) in Hp2.
+      cbn [c_put_bytes] in Hp2.
+      inv_bind Hp2. rename x into q1, Ha into Hq1. inv_bind Hp2. rename x into q2, Ha into Hq2.
+      inv_bind Hp2. rename x into q3, Ha into Hq3. inv_bind Hp2. rename x into q4, Ha into Hq4.
+      inv_bind Hp2. rename x into q5, Ha into Hq5. inv_bind Hp2. rename x into q6, Ha into Hq6.
+      inv_bind Hp2. rename x into q7, Ha into Hq7. inversion Hp2; subst q7; clear Hp2.
+      forward_if.
+      { rewrite Hgz. entailer!. }
+      2:{ match goal with Hn : p_gzhead p <> nullval |- _ => exfalso; apply Hn; rewrite Hgz; reflexivity end. }
+      pb_const Hq1. pb_const Hq2. pb_const Hq3. pb_const Hq4. pb_const Hq5.
+      pb_open Hq6. forward. forward.
+      unfold lvl_at. Intros.
+      forward.
+      forward_if_temp _t'32 (Vint (Int.repr (xfl_byte s))).
+      { forward. entailer!. unfold xfl_byte, d_level. zfin. }
+      { forward.
+        forward_if_temp _t'33 (Vint (Int.repr (if orb (d_strategy s >=? 2) (d_level s <? 2) then 1 else 0))).
+        { forward. entailer!. unfold d_strategy, d_level. zfin. }
+        { forward. forward. entailer!. unfold d_strategy, d_level. zfin. }
+        forward_if.
+        { forward. forward. entailer!. unfold xfl_byte, Z_HUFFMAN_ONLY.
+          destruct (orb _ _); [|lia]. unfold d_level. zfin. }
+        { forward. forward. entailer!. unfold xfl_byte, Z_HUFFMAN_ONLY.
+          destruct (orb _ _); [|unfold d_level; zfin]. match goal with Hx : Int.repr 1 = Int.zero |- _ => discriminate Hx end. } }
+      forward. forward. pb_close Hq6.
+      sep_apply (lvl_at_fold (d_tr s) (p_s p)); auto.
+      pb_const Hq7.
+      forward.
+      unfold c_flush_or_return in Hc. inv_bind Hc. destruct x as [s2 z2]. rename Ha into Hfp.
+      match type of Hfp with c_flush_pending ?s1 _ = _ =>
+        change (out_at (fst om2) (snd om2)) with (out_at (tr_out (d_tr s1)) (d_pbm s1));
+        change (offset_val (d_po s) (p_pbuf p)) with (offset_val (d_po s1) (p_pbuf p)) end.
+      change (out_space z pout R) with (out_space (set_z_adler z 0) pout R).
+      assert (Hz1 : strm_ranges (set_z_adler z 0)) by (apply strm_ranges_set_adler; auto; rep_lia).
+      forward_call (p_strm p, p_s p, p_pbuf p, pin, pout, msgv, R,
+        set_d_status (set_d_out (set_d_out s om1) om2) DState.BUSY_STATE, set_z_adler z 0, (s2, z2), gv).
+      destruct (c_flush_pending_inv _ _ _ _ Hz1 Hfp) as (o2 & po2 & Es2 & Hpo2 & Hgr2).
+      destruct (c_flush_pending_same _ _ _ _ Hfp) as (Ein2 & Emsg2 & _).
+      subst s2. cbn [fst snd].
+      match goal with |- context [out_at (tr_out (d_tr ?x)) (d_pbm ?x)] =>
+        change (out_at (tr_out (d_tr x)) (d_pbm x)) with (out_at (fst o2) (snd o2));
+        change (d_po x) with po2 end.
+      change (d_pending (set_d_po (set_d_out (set_d_status (set_d_out (set_d_out s om1) om2) DState.BUSY_STATE) o2) po2))
+        with (o_pending (fst o2)) in Hc.
+      rewrite gen_eq_ret, gen_eq_flush in Hc.
+      rewrite out_at_open. Intros. forward.
+      forward_if.
+      * assert (Hp0 : o_pending (fst o2) <> 0).
+        { intro E. match goal with Hn : Int64.repr (o_pending (fst o2)) <> _ |- _ => apply Hn; rewrite E; reflexivity end. }
+        rewrite (proj2 (Z.eqb_neq _ _) Hp0) in Hc. cbn [negb] in Hc. inversion Hc; subst s' z' o; clear Hc.
+        destruct (Hgr2 H17) as [Hz2 Hgrow2].
+        forward.
+        apply semax_ret_const with (r := 0); [intro rho; reflexivity | entailer! | ].
+        unfold abbreviate in POSTCONDITION; subst POSTCONDITION.
+        cbn [RA_return stage_post].
+        Exists msgv.
+        change (Vint (Int.repr 113)) with (vi DState.BUSY_STATE).
+        change (Vint (Int.neg (Int.repr 1))) with (vi (-1)).
+        change (rest_after (set_z_adler z 0) z2 R) with (rest_after z z2 R).
+        sep_apply (out_at_fold (fst o2) (snd o2) (p_s p) (p_pbuf p) H17).
+        sep_apply (dfull_close_gen s z z2 (fst o2) (snd o2) po2 (d_gzindex s) DState.BUSY_STATE (-1)
+                     p pin pout ish (rest_after z z2 R) msgv gv).
+        all: try solve [ rewrite Emsg2; exact H0 | exact Ein2 | apply Hpo2; destruct H1 as (_ & _ & Hp & _); exact Hp
+                       | unfold s32_ok, DState.BUSY_STATE; rep_lia
+                       | destruct H1 as (_ & _ & _ & _ & Hg & _); exact Hg
+                       | destruct H1 as (_ & _ & _ & _ & _ & _ & Hg & _); exact Hg ].
+        rewrite <- surjective_pairing.
+        sep_apply (deflate_globals_fold gv).
+        unfold hdr_res. entailer!.
+      * assert (Hp0 : o_pending (fst o2) = 0).
+        { destruct H17 as (_ & _ & Hpr & _).
+          match goal with Hx : Int64.repr (o_pending (fst o2)) = _ |- _ =>
+            apply (f_equal Int64.unsigned) in Hx; rewrite !Int64.unsigned_repr in Hx by rep_lia; exact Hx end. }
+        rewrite Hp0 in Hc. cbn in Hc. inversion Hc; subst s' z' o; clear Hc.
+        destruct (Hgr2 H17) as [Hz2 Hgrow2].
+        forward.
+        Exists msgv.
+        change (Vint (Int.repr 113)) with (vi DState.BUSY_STATE).
+        change (rest_after (set_z_adler z 0) z2 R) with (rest_after z z2 R).
+        sep_apply (out_at_fold (fst o2) (snd o2) (p_s p) (p_pbuf p) H17).
+        sep_apply (dfull_close_gen s z z2 (fst o2) (snd o2) po2 (d_gzindex s) DState.BUSY_STATE (d_last_flush s)
+                     p pin pout ish (rest_after z z2 R) msgv gv).
+        all: try solve [ rewrite Emsg2; exact H0 | exact Ein2 | apply Hpo2; destruct H1 as (_ & _ & Hp & _); exact Hp
+                       | unfold s32_ok, DState.BUSY_STATE; rep_lia
+                       | destruct H1 as (_ & _ & _ & _ & Hg & _); exact Hg
+                       | destruct H1 as (_ & _ & _ & _ & _ & _ & Hg & _); exact Hg ].
+        rewrite <- surjective_pairing.
+        sep_apply (deflate_globals_fold gv).
+        unfold hdr_res. entailer!.
+Qed.
+
+Lemma gz_hdr_ok {Espec : OracleKind} p pin pout ish R msgv gv flush s z hx W s' z' o om1 oa ob h
+  (Hfl : 0 <= flush <= 5) (Hpa : c_put_byte (d_out s) 31 = Some oa) (Hpb : c_put_byte oa 139 = Some ob)
+  (Hpc : c_put_byte ob 8 = Some om1) (Egz : d_gzhead s = Some h) (Hc : c_deflate_gzip_header s z = Some (s', z', o)) (Hgz : gz_ok (Some h) (p_gzhead p) hx W)
+  (H : strm_ranges z) (H0 : msg_ok (z_msg z) msgv) (H1 : dstate_ranges s) (H2 : readable_share ish)
+  (H3 : Int.repr (d_status s) = Int.repr 57) (Est : d_status s = GZIP_STATE)
+  (Hr : 0 <= o_pending (fst (d_out s)) < Zlength (o_buf (fst (d_out s)))) (H4 : out_ok (fst (d_out s)) (snd (d_out s)))
+  (Hr0 : 0 <= o_pending (fst oa) < Zlength (o_buf (fst oa))) (H5 : out_ok (fst oa) (snd oa))
+  (Hr1 : 0 <= o_pending (fst ob) < Zlength (o_buf (fst ob))) (H6 : out_ok (fst ob) (snd ob)) :
+  semax Delta_df (gz_mid_pre p pin pout ish R msgv gv flush s z om1 (hdr_res (Some h) (p_gzhead p) hx) W) gz_tail
+    (gz_mid_post p pin pout ish R gv flush z s' z' o (hdr_res (Some h) (p_gzhead p) hx) W).
+Proof.
+  unfold c_deflate_gzip_header in Hc. rewrite Est, Z.eqb_refl in Hc.
+  inv_bind Hc. apply c_dput_bytes_inv in Ha. destruct Ha as [om [Hq ->]].
+  cbn [c_put_bytes] in Hq. rewrite Hpa in Hq. cbn [bind] in Hq. rewrite Hpb in Hq. cbn [bind] in Hq.
+  rewrite Hpc in Hq. cbn [bind c_put_bytes] in Hq. inversion Hq; subst om; clear Hq.
+  change (d_gzhead (set_d_out s om1)) with (d_gzhead s) in Hc. rewrite Egz in Hc. cbn beta iota in Hc.
+  unfold gz_mid_pre, gz_mid_post, gz_tail, stage_post. cbv beta iota.
+  destruct hx as [[[hsh xp] np] cp]. destruct Hgz as (Hrs & _).
+      change (hdr_res (Some h) (p_gzhead p) (hsh, xp, np, cp)) with (gzh_at hsh h (p_gzhead p) xp np cp).
+      sep_apply (gzh_at_open hsh h (p_gzhead p) xp np cp). Intros.
+      assert_PROP (isptr (p_gzhead p)) as Hgp by entailer!.
+      freeze FR1 := (out_space _ _ _) (field_at _ _ (DOT _pending_out) _ _) (ltree_at _ _) (dtree_at _ _)
+        (sym_at _ _ _) (dtype_at _ _ _) (trees_rest _ _ _ _) (win_at _ _) (hash_at _ _) (match_at _ _).
+      freeze FR2 := (cfg_at _ _) (field_at _ _ (DOT _pending_buf_size) _ _) (field_at _ _ (DOT _wrap) _ _)
+        (field_at _ _ (DOT _method) _ _) (field_at _ _ (DOT _last_flush) _ _) (in_obj _ _ _) (trees_globals _)
+        (errmsg_at _) (gzh_more _ _) W.
+      forward.
+      forward_if.
+      { assert (Hvp : forall v, @field_at DCS.CS hsh t_gzh (DOT _text) v (p_gzhead p) |-- valid_pointer (p_gzhead p))
+          by (intros; apply field_at_valid_ptr0; [apply readable_nonidentity; auto | reflexivity | reflexivity]).
+        apply denote_tc_test_eq_split; [|apply valid_pointer_null]. vp_find (Hvp (vi (gz_text h))). }
+      { exfalso. match goal with Hn : p_gzhead p = nullval |- _ => rewrite Hn in Hgp; exact Hgp end. }
+      inv_bind Hc. apply c_dput_bytes_inv in Ha. destruct Ha as [om2 [Hp2 ->]]. rewrite d_out_set_d_out in Hp2.
+      change (xfl_byte (set_d_out s om1)) with (xfl_byte s) in Hp2.
+      cbn [c_put_bytes] in Hp2.
+      inv_bind Hp2. rename x into q1, Ha into Hq1. inv_bind Hp2. rename x into q2, Ha into Hq2.
+      inv_bind Hp2. rename x into q3, Ha into Hq3. inv_bind Hp2. rename x into q4, Ha into Hq4.
+      inv_bind Hp2. rename x into q5, Ha into Hq5. inv_bind Hp2. rename x into q6, Ha into Hq6.
+      inv_bind Hp2. rename x into q7, Ha into Hq7. inversion Hp2; subst q7; clear Hp2.
+      match goal with Hk : gzh_ok h |- _ => pose proof Hk as Hokh; destruct Hk as (Htx & Htm & Hos & Hxl & Hhc) end.
+      pb_open Hq1. forward. forward.
+      forward. forward.
+      forward_if_temp _t'36 (Vint (Int.repr (if gz_text h =? 0 then 0 else 1))).
+      { forward. entailer!. zfin. }
+      { int_zero. forward. entailer!. zfin. }
+      forward. forward.
+      forward_if_temp _t'37 (Vint (Int.repr (if gz_hcrc h =? 0 then 0 else 2))).
+      { forward. entailer!. zfin. }
+      { int_zero. forward. entailer!. zfin. }
+      forward. forward. { tc_optp xp. }
+      forward_if_temp _t'38 (Vint (Int.repr (match gz_extra h with None => 0 | Some _ => 4 end))).
+      { apply denote_tc_test_eq_split; [|apply valid_pointer_null]. vp_find (opt_obj_vp hsh (gz_extra h) xp Hrs). }
+      { destruct (gz_extra h) eqn:?; [exfalso; subst xp; assumption|]. forward. entailer!. }
+      { destruct (gz_extra h) eqn:?; [|exfalso; match goal with Hq : optp None xp |- _ => cbn [optp] in Hq; subst xp end; contradiction]. forward. entailer!. }
+      forward. forward. { tc_optp np. }
+      forward_if_temp _t'39 (Vint (Int.repr (match gz_name h with None => 0 | Some _ => 8 end))).
+      { apply denote_tc_test_eq_split; [|apply valid_pointer_null]. vp_find (opt_obj_vp hsh (gz_name h) np Hrs). }
+      { destruct (gz_name h) eqn:?; [exfalso; subst np; assumption|]. forward. entailer!. }
+      { destruct (gz_name h) eqn:?; [|exfalso; match goal with Hq : optp None np |- _ => cbn [optp] in Hq; subst np end; contradiction]. forward. entailer!. }
+      forward. forward. { tc_optp cp. }
+      forward_if_temp _t'40 (Vint (Int.repr (match gz_comment h with None => 0 | Some _ => 16 end))).
+      { apply denote_tc_test_eq_split; [|apply valid_pointer_null]. vp_find (opt_obj_vp hsh (gz_comment h) cp Hrs). }
+      { destruct (gz_comment h) eqn:?; [exfalso; subst cp; assumption|]. forward. entailer!. }
+      { destruct (gz_comment h) eqn:?; [|exfalso; match goal with Hq : optp None cp |- _ => cbn [optp] in Hq; subst cp end; contradiction]. forward. entailer!. }
+      forward. forward. { flags_tc h. }
+      rewrite !add_repr. pb_close Hq1.
+      pb_open Hq2. forward. forward. forward. forward. forward. forward. zmm_norm. pb_close Hq2.
+      pb_open Hq3. forward. forward. forward. forward. forward. with_strategy opaque [Int64.shru] forward. rewrite shru64_eq by rep_lia. zmm_norm. pb_close Hq3.
+      pb_open Hq4. forward. forward. forward. forward. forward. with_strategy opaque [Int64.shru] forward. rewrite shru64_eq by rep_lia. zmm_norm. pb_close Hq4.
+      pb_open Hq5. forward. forward. forward. forward. forward. with_strategy opaque [Int64.shru] forward. rewrite shru64_eq by rep_lia. zmm_norm. pb_close Hq5.
+      pb_open Hq6. forward. forward.
+      unfold lvl_at. Intros.
+      forward.
+      forward_if_temp _t'46 (Vint (Int.repr (xfl_byte s))).
+      { forward. entailer!. unfold xfl_byte, d_level. zfin. }
+      { forward.
+        forward_if_temp _t'47 (Vint (Int.repr (if orb (d_strategy s >=? 2) (d_level s <? 2) then 1 else 0))).
+        { forward. entailer!. unfold d_strategy, d_level. zfin. }
+        { forward. forward. entailer!. unfold d_strategy, d_level. zfin. }
+        forward_if.
+        { forward. forward. entailer!. unfold xfl_byte, Z_HUFFMAN_ONLY.
+          destruct (orb _ _); [|lia]. unfold d_level. zfin. }
+        { forward. forward. entailer!. unfold xfl_byte, Z_HUFFMAN_ONLY.
+          destruct (orb _ _); [|unfold d_level; zfin]. match goal with Hx : Int.repr 1 = Int.zero |- _ => discriminate Hx end. } }
+      forward. forward. pb_close Hq6.
+      sep_apply (lvl_at_fold (d_tr s) (p_s p)); auto.
+      pb_open Hq7. forward. forward. forward. forward. forward. forward. pb_close Hq7.
+      inv_bind Hc. rename x into s1, Ha into Hs1.
+      assert (HxF : exists omF, s1 = set_d_out (set_d_out (set_d_out s om1) om2) omF /\
+        match gz_extra h with
+        | Some _ => c_put_bytes om2 [Z.land (gz_extra_len h) 255; Z.land (Z.shiftr (gz_extra_len h) 8) 255] = Some omF
+        | None => omF = om2
+        end).
+      { destruct (gz_extra h).
+        - apply c_dput_bytes_inv in Hs1. destruct Hs1 as [omF [HF ->]]. rewrite d_out_set_d_out in HF. eauto.
+        - inversion Hs1; subst s1. exists om2. rewrite set_d_out_out. auto. }
+      destruct HxF as [omF [-> HF]]. clear Hs1.
+      rewrite !set_d_out_out in Hc.
+      assert (Hok_om2 : out_ok (fst om2) (snd om2))
+        by (destruct (c_put_byte_inv' _ _ _ Hq7) as [Hx ->]; apply out_ok_put_byte; assumption).
+      destruct (c_put_byte_len _ _ _ Hq7) as [Hl7a Hl7b].
+      assert (HlenF : Zlength (o_buf (fst omF)) = Zlength (o_buf (fst om2)) /\ out_ok (fst omF) (snd omF)).
+      { destruct (gz_extra h); [|subst omF; auto].
+        split; [exact (c_put_bytes_len _ _ _ HF) | exact (c_put_bytes_ok _ _ _ HF Hok_om2)]. }
+      destruct HlenF as [HlenF HokF0].
+      forward. forward.
+      forward_if_sep (out_at (fst om2) (snd om2) (p_s p) (p_pbuf p)) (out_at (fst omF) (snd omF) (p_s p) (p_pbuf p)).
+      { apply denote_tc_test_eq_split; [|apply valid_pointer_null]. vp_find (opt_obj_vp hsh (gz_extra h) xp Hrs). }
+      { destruct (gz_extra h) as [xb|] eqn:Ex.
+        - cbn [c_put_bytes] in HF. inv_bind HF. rename x into e1, Ha into He1.
+          inv_bind HF. rename x into e2, Ha into He2. inversion HF; subst e2; clear HF.
+          pb_open He1. forward. forward. forward. forward. forward. forward. pb_close He1.
+          pb_open He2. forward. forward. forward. forward. forward. forward. rewrite byte_shru8 by rep_lia. pb_close He2.
+          entailer!.
+        - exfalso. match goal with Hq : optp None xp |- _ => cbn [optp] in Hq; subst xp end. contradiction. }
+      { destruct (gz_extra h) as [xb|] eqn:Ex.
+        - exfalso. match goal with Hn : xp = nullval |- _ => subst xp end. assumption.
+        - subst omF. forward. entailer!. }
+      forward. forward.
+      destruct (Z.eqb_spec (gz_hcrc h) 0) as [Eh|Eh].
+      * cbn [bind] in Hc. inversion Hc; subst s' z' o; clear Hc.
+        forward_if_sep (Zlib.proof.crc32.Spec.crc_table_at Ers gv) (Zlib.proof.crc32.Spec.crc_table_at Ers gv).
+        { exfalso. match goal with Hx : Int.repr (gz_hcrc h) <> Int.zero |- _ => apply Hx; rewrite Eh; reflexivity end. }
+        { forward. entailer!. }
+        forward. forward.
+        thaw FR2. thaw FR1.
+        Exists msgv.
+        change (Vint (Int.repr 69)) with (vi DState.EXTRA_STATE).
+        rewrite gen_eq_hdr1.
+        change (out_space z pout R) with (out_space (set_z_adler z 0) pout R).
+        rewrite (rest_after_same z (set_z_adler z 0) R) by reflexivity.
+        sep_apply (dfull_close_gen s z (set_z_adler z 0) (fst omF) (snd omF) (d_po s) 0 DState.EXTRA_STATE
+                     (d_last_flush s) p pin pout ish R msgv gv).
+        all: try solve [ apply strm_ranges_set_adler; auto; rep_lia | exact H0 | reflexivity
+                       | destruct H1 as (_ & _ & Hp & _); exact Hp
+                       | unfold s32_ok, DState.EXTRA_STATE; rep_lia | unfold u64_ok; rep_lia
+                       | destruct H1 as (_ & _ & _ & _ & _ & _ & Hg & _); exact Hg ].
+        rewrite <- surjective_pairing.
+        sep_apply (gzh_at_fold hsh h (p_gzhead p) xp np cp Hrs Hokh).
+        sep_apply (deflate_globals_fold gv).
+        change (hdr_res (Some h) (p_gzhead p) (hsh, xp, np, cp)) with (gzh_at hsh h (p_gzhead p) xp np cp).
+        entailer!; try apply derives_refl.
+      * cbn [bind] in Hc. inv_bind Hc. rename x into z0, Ha into Hz0.
+        inv_bind Hz0. rename x into bytes, Ha into Hrd. inversion Hz0; subst z0; clear Hz0.
+        inversion Hc; subst s' z' o; clear Hc.
+        change (d_pb (set_d_out s omF)) with (mkMB (o_buf (fst omF)) (snd omF)) in Hrd.
+        change (d_pending (set_d_out s omF)) with (o_pending (fst omF)) in Hrd.
+        pose proof (mb_read_le _ _ _ _ Hrd) as Hle. cbn [mb_val] in Hle.
+        assert (HmbF : mb_ok (mkMB (o_buf (fst omF)) (snd omF))) by (exact (proj1 HokF0)).
+        forward_if_sep (strm_at (set_z_adler z 0) (p_s p) (p_strm p) pin pout msgv gv)
+          (strm_at (set_z_adler (set_z_adler z 0) (Model.ref_crc32 (z_adler (set_z_adler z 0)) bytes))
+             (p_s p) (p_strm p) pin pout msgv gv).
+        { rewrite strm_at_open. Intros.
+          change (z_adler (set_z_adler z 0)) with 0.
+          forward.
+          rewrite out_at_open. Intros. forward. forward.
+          pose proof (mb_read_length _ _ _ _ Hrd) as Hbl.
+          pose proof (mb_read_bytes _ _ _ _ HmbF Hrd) as Hbb.
+          assert_PROP (isptr (p_pbuf p)) as Hpbp by entailer!.
+          forward_call (0, p_pbuf p, o_pending (fst omF), false, Ews, p_pbuf p, 0, Zlength (o_buf (fst omF)),
+                        pb_vals (o_buf (fst omF)) (snd omF), bytes, false, Ews, gv, Ers).
+          { rewrite <- da_cs_crc. cancel. }
+          { assert (Hlen64 : 0 <= o_pending (fst omF) <= Int64.max_unsigned)
+              by (destruct HokF0 as (_ & _ & HpF & _); exact HpF).
+            assert (Hcb : and (Zlib.proof.adler32.Bytes.cbuf_ok false (p_pbuf p) Ews (p_pbuf p) 0 (Zlength (o_buf (fst omF)))
+                            (o_pending (fst omF)) (pb_vals (o_buf (fst omF)) (snd omF)) bytes) (Zlib.proof.adler32.Bytes.cbuf_valid false false (Zlength (o_buf (fst omF))))).
+            { split.
+              - unfold Zlib.proof.adler32.Bytes.cbuf_ok. split; [rewrite isptr_offset_val_zero; auto|].
+                split; [auto|]. split; [lia|]. split; [lia|].
+                split; [exact Hbl|]. split; [apply bytes_is_bytes; exact Hbb|].
+                rewrite Z.add_0_l. apply pb_vals_read; [destruct HmbF as [Hm _]; exact Hm | exact Hrd].
+              - apply Zlib.proof.adler32.Bytes.cbuf_valid_pos. lia. }
+            repeat match goal with
+            | |- _ => exact Hcb
+            | |- _ => exact Hlen64
+            | |- and _ _ => split
+            end.
+            all: first [exact (proj1 Hcb) | exact (proj2 Hcb) | rep_lia | auto]. }
+          forward.
+          rewrite <- da_cs_crc.
+          sep_apply (out_at_fold (fst omF) (snd omF) (p_s p) (p_pbuf p) HokF0).
+          sep_apply (strm_at_set_adler (set_z_adler z 0) (Model.ref_crc32 0 bytes) (p_s p) (p_strm p) pin pout msgv gv).
+          entailer!. apply derives_refl. }
+        { exfalso. int_zero. contradiction. }
+        forward. forward.
+        thaw FR2. thaw FR1.
+        Exists msgv.
+        change (Vint (Int.repr 69)) with (vi DState.EXTRA_STATE).
+        rewrite gen_eq_hdr1.
+        assert (Hcr : 0 <= Model.ref_crc32 (z_adler (set_z_adler z 0)) bytes <= Int64.max_unsigned).
+        { assert (Hib : Zlib.proof.adler32.Bytes.is_bytes bytes).
+          { apply bytes_is_bytes. eapply mb_read_bytes; [|exact Hrd]. exact HmbF. }
+          pose proof (Zlib.proof.crc32.Combine.ref_crc32_range (z_adler (set_z_adler z 0)) bytes Hib) as Hr32.
+          unfold Zlib.proof.crc32.GF2.is32 in Hr32. rep_lia. }
+        change (out_space z pout R) with
+          (out_space (set_z_adler (set_z_adler z 0) (Model.ref_crc32 (z_adler (set_z_adler z 0)) bytes)) pout R).
+        rewrite (rest_after_same z _ R) by reflexivity.
+        sep_apply (dfull_close_gen s z (set_z_adler (set_z_adler z 0) (Model.ref_crc32 (z_adler (set_z_adler z 0)) bytes))
+                     (fst omF) (snd omF) (d_po s) 0 DState.EXTRA_STATE (d_last_flush s) p pin pout ish R msgv gv).
+        all: try solve [ apply strm_ranges_set_adler; auto; rep_lia
+                       | apply strm_ranges_set_adler; [apply strm_ranges_set_adler; auto; rep_lia | exact Hcr]
+                       | exact H0 | reflexivity
+                       | destruct H1 as (_ & _ & Hp & _); exact Hp
+                       | unfold s32_ok, DState.EXTRA_STATE; rep_lia | unfold u64_ok; rep_lia
+                       | destruct H1 as (_ & _ & _ & _ & _ & _ & Hg & _); exact Hg ].
+        rewrite <- surjective_pairing.
+        sep_apply (gzh_at_fold hsh h (p_gzhead p) xp np cp Hrs Hokh).
+        sep_apply (deflate_globals_fold gv).
+        change (hdr_res (Some h) (p_gzhead p) (hsh, xp, np, cp)) with (gzh_at hsh h (p_gzhead p) xp np cp).
+        entailer!; try apply derives_refl.
+Qed.
+
+Lemma stage_gzip : stage_ok_gz S_gzip c_deflate_gzip_header.
+Proof.
+  intros Espec p pin pout ish R msgv gv flush s z hx W res Hfl Hc Hgz.
+  unfold stage_pre, stage_post, df_locals.
+  cbv [S_gzip nth_stmt df_body f_deflate fn_body].
+  sep_apply (dfull_flush_open s z p pin pout ish R msgv gv). Intros.
+  unfold flush_frame. Intros.
+  forward.
+  destruct res as [[s' z'] o].
+  forward_if (EX msgv' : val, PROP (o = None)
+    LOCAL (temp _strm (p_strm p); temp _s (p_s p); temp _flush (vi flush); gvars gv)
+    SEP (dfull s' z' p pin pout ish (rest_after z z' R) msgv' gv; deflate_globals gv;
+         hdr_res (d_gzhead s) (p_gzhead p) hx; W)).
+  - (* GZIP_STATE *)
+    assert (Est : d_status s = GZIP_STATE).
+    { unfold GZIP_STATE. open_dranges H1. apply repr_inj_signed; auto; rep_lia. }
+    pose proof Hc as Hc0.
+    unfold c_deflate_gzip_header in Hc. rewrite Est, Z.eqb_refl in Hc.
+    inv_bind Hc. apply c_dput_bytes_inv in Ha. destruct Ha as [om1 [Hp1 ->]].
+    cbn [c_put_bytes] in Hp1. inv_bind Hp1. rename x into oa, Ha into Hpa.
+    inv_bind Hp1. rename x into ob, Ha into Hpb. inv_bind Hp1. rename x into oc, Ha into Hpc.
+    inversion Hp1; subst oc; clear Hp1.
+    unfold deflate_globals. Intros.
+    forward_call (0, nullval, 0, true, Ews, nullval, 0, 0, @nil val, @nil Z, false, Ews, gv, Ers).
+    { rewrite !emp_sepcon. cancel. }
+    rewrite strm_at_open. Intros. forward.
+    sep_apply (strm_at_set_adler z 0 (p_s p) (p_strm p) pin pout msgv gv).
+    change (out_at (tr_out (d_tr s)) (d_pbm s)) with (out_at (fst (d_out s)) (snd (d_out s))).
+    pb_const Hpa. pb_const Hpb. pb_const Hpc.
+    change (d_gzhead (set_d_out s om1)) with (d_gzhead s) in Hc.
+    destruct (d_gzhead s) as [h|] eqn:Egz.
+    + repeat match goal with
+      | X := @abbreviate statement _ |- _ => unfold abbreviate in X; subst X
+      | X := @abbreviate ret_assert _ |- _ => unfold abbreviate in X; subst X
+      end.
+      eapply semax_pre; [| exact (gz_hdr_ok p pin pout ish R msgv gv flush s z hx W s' z' o om1 oa ob h Hfl Hpa Hpb Hpc
+        Egz Hc0 Hgz H H0 H1 H2 H3 Est Hr H4 Hr0 H5 Hr1 H6)].
+      unfold gz_mid_pre. entailer!.
+    + cbn in Hgz.
+      repeat match goal with
+      | X := @abbreviate statement _ |- _ => unfold abbreviate in X; subst X
+      | X := @abbreviate ret_assert _ |- _ => unfold abbreviate in X; subst X
+      end.
+      eapply semax_pre; [| exact (gz_nohdr_ok p pin pout ish R msgv gv flush s z hx W s' z' o om1 oa ob Hfl Hpa Hpb Hpc
+        Egz Hc0 Hgz H H0 H1 H2 H3 Est Hr H4 Hr0 H5 Hr1 H6)].
+      unfold gz_mid_pre. entailer!.
+  - (* not GZIP_STATE *)
+    forward.
+    unfold c_deflate_gzip_header in Hc.
+    rewrite (proj2 (Z.eqb_neq _ _)) in Hc by (unfold GZIP_STATE; intro E; rewrite E in *; contradiction).
+    inversion Hc; subst s' z' o; clear Hc.
+    Exists msgv. rewrite rest_after_refl.
+    sep_apply (flush_frame_fold s z p pin ish gv); auto.
+    sep_apply (dfull_flush_back s z p pin pout ish R msgv gv); auto.
+    entailer!.
+  - Intros msgv'. subst o. Exists msgv'. entailer!.
+Qed.

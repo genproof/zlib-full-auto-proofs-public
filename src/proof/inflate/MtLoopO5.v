@@ -1,0 +1,72 @@
+(* case MATCH: the copy loop from the output itself (DmKit5.mt_loop_o_stmt) *)
+Require Import VST.floyd.proofauto.
+Require Zlib.units.Inflate.
+Require Import Zlib.inflate.code.
+Require Import Zlib.proof.inflate.DmKit5.
+Require Import Zlib.proof.inflate.MtCopy5.
+#[local] Existing Instance Zlib.units.Inflate.CS.
+Local Open Scope logic.
+
+Lemma mt_out_znth: forall olo on oc owk j, 0 <= olo <= Zlength oc -> 0 <= j < Zlength owk ->
+  Znth (olo + j) (sublist 0 olo oc ++ byte_vals owk ++ sublist (olo + Zlength owk) on oc) = Vint (Int.repr (Znth j owk)).
+Proof.
+  intros. rewrite app_Znth2 by (rewrite Zlength_sublist; lia).
+  rewrite Zlength_sublist by lia. rewrite app_Znth1 by (unfold byte_vals; rewrite Zlength_map; lia).
+  unfold byte_vals. rewrite Znth_map by lia. f_equal. f_equal. f_equal. lia.
+Qed.
+
+Lemma mt_loop_o_ok : mt_loop_o_stmt.
+Proof.
+  intros Espec osh op olo on oc ow w d c Hosh Hop Holo Hroom Hoc Hon Bow Hc Hd.
+  pose proof (Zlength_nonneg ow) as How0.
+  rewrite mt_loop_eq.
+  forward_loop
+    (EX k: Z,
+      PROP (0 <= k < c)
+      LOCAL (temp _put (offset_val (olo + Zlength ow + k) op); temp _from (offset_val (olo + Zlength ow - d + k) op);
+             temp _copy (Vint (Int.repr (c - k))))
+      SEP (mt_out osh op olo on oc (fst (copy_bytes w (SOut (Zlength ow - d)) k ow))))
+    break:
+     (PROP () LOCAL (temp _put (offset_val (olo + Zlength ow + c) op))
+      SEP (mt_out osh op olo on oc (fst (copy_bytes w (SOut (Zlength ow - d)) c ow)))).
+  - Exists 0. rewrite copy_bytes_0. entailer!.
+  - Intros k.
+    pose proof (copy_bytes_len' w (SOut (Zlength ow - d)) k ow ltac:(lia)) as LK.
+    pose proof (copy_bytes_out_S w (Zlength ow - d) k ow ltac:(lia)) as LS.
+    pose proof (copy_bytes_bytes_out w (Zlength ow - d) k ow ltac:(lia) ltac:(lia) Bow) as BK.
+    set (owk := fst (copy_bytes w (SOut (Zlength ow - d)) k ow)) in *.
+    unfold mt_out.
+    assert_PROP (field_compatible (tarray tuchar on) [] op) as FCo by entailer!.
+    assert (BR: 0 <= Znth (Zlength ow - d + k) owk <= Byte.max_unsigned)
+      by (apply (proj1 (Forall_Znth _ _) BK); lia).
+    assert (ZV: Znth (olo + Zlength ow - d + k) (sublist 0 olo oc ++ byte_vals owk ++ sublist (olo + Zlength owk) on oc)
+                = Vint (Int.repr (Znth (Zlength ow - d + k) owk))).
+    { replace (olo + Zlength ow - d + k) with (olo + (Zlength ow - d + k)) by lia.
+      apply mt_out_znth; lia. }
+    forward. forward. forward. forward.
+    rewrite !mt_add1 by auto.
+    rewrite (offset_val_field_address_tuchar on (olo + Zlength ow - d + k) op) by (auto; lia).
+    forward.
+    { setoid_rewrite ZV. entailer!. all: rep_lia. }
+    setoid_rewrite ZV.
+    rewrite (offset_val_field_address_tuchar on (olo + Zlength ow + k) op) by (auto; lia).
+    forward.
+    rewrite <- (offset_val_field_address_tuchar on (olo + Zlength ow + k) op) by (auto; lia).
+    rewrite <- (offset_val_field_address_tuchar on (olo + Zlength ow - d + k) op) by (auto; lia).
+    replace (olo + Zlength ow + k) with (olo + Zlength owk) by lia.
+    rewrite zext8, Z.mod_small by rep_lia.
+    rewrite (out_rep_snoc osh op olo on oc owk (Znth (Zlength ow - d + k) owk)) by lia.
+    rewrite <- LS.
+    forward. forward.
+    forward_if.
+    + forward. Exists (k + 1). unfold out_rep, mt_out. entailer!.
+      match goal with Hn: Int.unsigned (Int.repr (c - k)) - Int.unsigned (Int.repr 1) <> 0 |- _ =>
+        rewrite !Int.unsigned_repr in Hn by rep_lia end.
+      split; [lia | ]. split; [f_equal; lia | ]. split; f_equal; [lia | f_equal; lia].
+    + assert (E: c = k + 1).
+      { match goal with Hn: Int.sub (Int.repr (c - k)) (Int.repr 1) = Int.zero |- _ =>
+          rewrite sub_repr in Hn; apply repr_inj_unsigned in Hn; rep_lia end. }
+      subst c. forward. entailer!.
+      all: try (f_equal; lia). all: apply derives_refl.
+  - entailer!. rewrite copy_bytes_len' by lia. f_equal. lia.
+Qed.

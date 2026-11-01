@@ -1,0 +1,227 @@
+(* inflate()'s body in the allocator-generic port with its output pointer allowed inside the z_stream itself:
+   [inflate_spec_za_s] is za/inflate_api/Spec5.v's inflate_spec_za with SpecSelf's [self_out] as a second
+   admissible output (the empty object at the stream's member `reserved`, no token, avail_out = 0).  The body
+   is za/inflate_api/Body5_inflate.v's body_inflate_proof5_za with the prologue split on the two kinds of
+   output (BodyWSelfPro.pro_self_za for the stream's own member); the loop and exit parts do not use the
+   output's token. *)
+Require Import VST.floyd.proofauto.
+Require Import VST.floyd.library.
+Require Zlib.units.Inflate.
+Require Import Zlib.inflate.code.
+Require Import Zlib.proof.za.inflate_api.Bodies5.
+Require Import Zlib.proof.za.inflate_api.Body5Parts.
+Require Import Zlib.proof.za.inflate_api.Body5Conv.
+Require Import Zlib.proof.za.inflate_api.Body5Pro.
+Require Import Zlib.proof.za.inflate_api.Body5Loop.
+Require Import Zlib.proof.za.inflate_api.Body5Exit.
+Require Import Zlib.proof.za.inflate_api.Body5StepInv.
+Require Import Zlib.proof.za.inflate_api.Body5StepHdr.
+Require Import Zlib.proof.za.inflate_api.Body5Fin.
+Require Import Zlib.proof.za.inflate_api.BodyKitZ.
+Require Import Zlib.proof.za.inflate_api.Body5_inflate.
+Require Import Zlib.proof.za.inflate_api.RetModeZ.
+Require Import Zlib.proof.za.inflate_api.NoMemZ.
+Require Zlib.proof.inflate.Steps2.
+Require Import Zlib.proof.crc32.Spec.
+Require Import Zlib.proof.zutil.ZAlloc.
+Require Import Zlib.proof.za.inflate.ZAV.
+Require Import Zlib.proof.za.inflate.ZEvents.
+Require Import Zlib.proof.za.inflate.ZTac.
+Require Zlib.proof.inflate.InvW.
+Require Import Zlib.proof.inflate_api.SpecSelf.
+Require Import Zlib.proof.inflate_api.BodyWSelfPro.
+
+#[local] Existing Instance Zlib.units.Inflate.CS.
+Local Open Scope logic.
+Section ZAlloc.
+Context {ZA : Zlib.proof.zutil.ZAlloc.zallocator} {ZAV : Zlib.proof.za.inflate.ZAV.adler_cell}.
+
+Definition inflate_spec_za_s :=
+  DECLARE _inflate
+  WITH gv: globals, shs: share, strmp: val, z: zfields, st: option live, ib: inbuf, inp: list Z,
+       ob: option outbuf, flush: Z, gsh: share, tsh: share, itok: bool, otok: bool, tr: list zev
+  PRE [ tptr t_strm, tint ]
+    PROP (Int.min_signed <= flush <= Int.max_signed; readable_share gsh; readable_share tsh;
+          in_tok_ok itok ib; out_tok_ok otok ob \/ self_out strmp otok ob (zf_ao z);
+          zf_ni z = in_ptr ib 0;
+          match ib with InNull => inp = [] | InBuf _ _ _ _ _ => in_ok ib inp /\ zf_ai z = Zlength inp end;
+          match ob with None => zf_no z = nullval | Some o => zf_no z = out_ptr o 0 /\ out_ok o (zf_ao z) end;
+          match st with Some L => Zlib.proof.inflate.InvW.swfW (l_s L) | None => True end;
+          za_now tr + 2 ^ 23 <= za_cap; is_pointer_or_null za_opaque)
+    PARAMS (strmp; Vint (Int.repr flush)) GLOBALS (gv)
+    SEP (istream_opt_za gv shs strmp z st; head_opt (is_live strmp st); bufs_opt (is_live strmp st) ib ob [] itok otok;
+         tables_rep gsh gv; crc_table_at tsh gv; za_res gv tr; zfuncs_za gv)
+  POST [ tint ]
+    EX r: Z, EX z': zfields, EX st': option live, EX ow: list Z,
+    PROP (inflate_rel flush strmp z st ib inp ob r z' st' ow;
+          match st' with Some L' => Zlib.proof.inflate.InvW.swfW (l_s L') | None => True end)
+    RETURN (Vint (Int.repr r))
+    SEP (istream_opt_za gv shs strmp z' st'; head_opt (is_live strmp st'); bufs_opt (is_live strmp st) ib ob ow itok otok;
+         tables_rep gsh gv; crc_table_at tsh gv;
+         za_res gv (tr ++ match st, st' with Some L, Some L' => win_ev (l_s L) (l_s L') | _, _ => [] end);
+         zfuncs_za gv).
+
+(* the body against it, in the context of inflate_spec_za's body (Bodies5.body_inflate_stmt_za), from the
+   same switch cases and invariants as body_inflate_from_cases5_za *)
+Definition body_inflate_s_za_stmt : Prop :=
+  cases_all5_za -> stepf2_mwf3_stmt_za -> stepf2_hd_stmt ->
+  forall {Espec: OracleKind}, semax_body Vprog_inflate Gprog_inflate3_za f_inflate inflate_spec_za_s.
+
+Lemma body_inflate_s_za : body_inflate_s_za_stmt.
+Proof.
+intros HC HS HD E.
+start_function.
+match goal with |- semax _ _ _ ?R => set (RR := R) end.
+assert (RET: forall (F: frame) (Y T X: mpred) (r: Z) (ev: list zev),
+  f_vhere F = v_here -> f_vlast F = v_last -> f_vhbuf F = v_hbuf -> f_gv F = gv ->
+  Y * T * X |-- (EX z': zfields, EX st': option live, EX ow: list Z,
+          !! (inflate_rel flush strmp z st ib inp ob r z' st' ow /\
+              match st' with Some L' => Zlib.proof.inflate.InvW.swfW (l_s L') | None => True end /\
+              ev = match st, st' with Some L, Some L' => win_ev (l_s L) (l_s L') | _, _ => [] end) &&
+          (istream_opt_za gv shs strmp z' st' * head_opt (is_live strmp st') *
+           bufs_opt (is_live strmp st) ib ob ow itok otok *
+           tables_rep gsh gv * crc_table_at tsh gv * za_res gv (tr ++ ev))) ->
+  ENTAIL Delta_inflate5_za, PROPx [] (LOCALx (ret_locals F)
+     (SEPx [Y; locals_rep F; T; zfuncs_za (f_gv F); X])) |-- RA_return RR (Some (zv r))).
+{ intros F Y T X r ev E1 E2 E3 E4 HX. unfold RR, POSTCONDITION, abbreviate. simpl RA_return.
+  unfold ret_locals, locals_rep; rewrite E1, E2, E3, E4. unfold stackframe_of; simpl fn_vars. simpl fold_right. go_lowerx.
+  rewrite !var_block_data_at_ by (reflexivity || auto). unfold_lift. erewrite !lvar_eval_lvar by eassumption.
+  sep_apply HX.
+  Intros z' st' ow.
+  repeat match goal with Hc: _ /\ _ |- _ => destruct Hc end. subst ev.
+  Exists r z' st' ow. entailer!. }
+change Delta with Delta_inflate5_za.
+apply body_reshape.
+eapply semax_seq.
+{ match goal with Ho: out_tok_ok _ _ \/ self_out _ _ _ _ |- _ => destruct Ho as [OT | SO] end;
+    [apply (@pro_part5_za ZA ZAV _ gv shs strmp z st ib inp ob flush gsh tsh itok otok v_here v_last v_hbuf tr RR)
+    | apply (@pro_self_za ZA ZAV _ gv shs strmp z st ib inp ob flush gsh tsh itok otok v_here v_last v_hbuf tr RR)];
+    auto.
+  all: intros BAD; unfold RR, POSTCONDITION, abbreviate; simpl RA_return;
+    unfold stackframe_of; simpl fn_vars; simpl fold_right; go_lowerx;
+    rewrite !var_block_data_at_ by (reflexivity || auto); unfold_lift; erewrite !lvar_eval_lvar by eassumption;
+    Exists Z_STREAM_ERROR z st (@nil Z);
+    destruct st as [L0|]; cbv beta iota;
+      [rewrite (win_ev_same (l_s L0) (l_s L0) eq_refl eq_refl) | ]; rewrite app_nil_r; entailer!; left; auto. }
+unfold pro_post_za. Intros L o.
+apply semax_extract_prop. intros (EL & EO & NB & LOK & ZOK & WS & NN). subst st ob.
+set (F := mkF gv shs strmp L ib o gsh tsh z v_here v_last v_hbuf flush).
+set (X := xfr_za L itok otok ib o).
+set (m0 := m_init z L inp).
+pose proof LOK as (LP & LS & LM & LH & LS3 & LW & LW0 & LHD & LWIN).
+assert (FOK: frame_ok5 F) by (unfold frame_ok5, frame_ok, F, mkF; simpl; auto).
+assert (INP: Zlength inp <= Int.max_unsigned /\ bytes_ok inp).
+{ destruct ib as [ | ish ip ilo ilen ic].
+  - subst inp. split; [rewrite Zlength_nil; rep_lia | constructor].
+  - pose proof ZOK as (ZAI & _).
+    destruct H3 as [(_ & _ & _ & _ & _ & _ & _ & HB) HA]. split; [lia | exact HB]. }
+assert (MW: mwf3_za m0).
+{ apply m_init_mwf3_za; try tauto.
+  all: match goal with Hs: context [Zlib.proof.inflate.InvW.swfW] |- _ => exact Hs end. }
+assert (OI: out_inv m0).
+{ apply m_init_out_inv. destruct ZOK as (_ & ? & _); lia. }
+assert (WI0: win_inv5 (m_s m0)).
+{ unfold m0. rewrite m_init_s. apply s_typedo_win_inv5, live_win_inv5, LOK. }
+assert (HD0: hd_ok F m0).
+{ unfold hd_ok, m0, F, mkF. rewrite m_init_s. cbn [f_xb f_nb f_cb m_h m_init].
+  unfold s_typedo. destruct (i_mode (l_s L) =? Zlib.proof.inflate.Model.TYPE); exact LHD. }
+assert (DT: srange (zf_dt z)) by (destruct ZOK as (_&_&_&_&HDT&_); exact HDT).
+assert (ISL: is_live strmp (Some L) = Some L).
+{ unfold is_live. destruct (eq_dec strmp nullval); [contradiction | reflexivity]. }
+assert (WIN0: i_win (m_s m0) = i_win (l_s L)).
+{ unfold m0. rewrite m_init_s. unfold s_typedo.
+  destruct (i_mode (l_s L) =? Zlib.proof.inflate.Model.TYPE); reflexivity. }
+assert (M0L: i_mode (m_s m0) = MEM <-> i_mode (l_s L) = MEM).
+{ unfold m0. rewrite m_init_s. unfold s_typedo.
+  destruct (Z.eqb_spec (i_mode (l_s L)) Zlib.proof.inflate.Model.TYPE) as [T|T]; [ | tauto].
+  cbn [i_mode set_i_mode]. rewrite T. unfold TYPEDO, Zlib.proof.inflate.Model.TYPE, MEM.
+  split; intro Y; discriminate Y. }
+eapply semax_seq.
+{ apply (@loop_part5_za ZA ZAV _ F (za_res gv tr * X) m0
+           (fun m => out_inv m /\ i_win (m_s m) = i_win (m_s m0) /\ win_inv5 (m_s m) /\ m_inp m = inp /\
+                     (i_mode (m_s m0) = MEM -> m = m0) /\ (i_mode (m_s m) = MEM -> i_mode (m_s m0) = MEM))
+           (fun m => i_win (m_s m) = i_win (m_s m0) /\ win_inv5 (m_s m) /\ m_inp m = inp /\
+                     Zlib.proof.inflate.InvW.swfW (m_s m) /\ (i_mode (m_s m) = MEM -> i_mode (m_s m0) = MEM))
+           RR HC HS HD stepf2_hdr_za FOK).
+  - intros m HW HL0 _ (OIm & WIm & WVm & IPm & MM0 & MM1).
+    pose proof (stepf_inv5_za (f_flush F) m HW HL0 OIm WVm) as HSI.
+    pose proof (stepf2_hdr_za (f_flush F) m HW HL0) as HSH.
+    pose proof (stepf2_ret_swfW (f_flush F) lenfix_list distfix_list m) as HSR.
+    pose proof (stepf2_brk_not_mem (f_flush F) lenfix_list distfix_list m) as HNB.
+    pose proof (stepf2_ret_mem (f_flush F) lenfix_list distfix_list m) as HRM.
+    (* a pass in mode MEM returns: a call starting in MEM stays at m0; the switch never goes on in MEM *)
+    assert (MB: i_mode (m_s m0) = MEM -> exists r m', stepf2 (f_flush F) lenfix_list distfix_list m = IRet r m').
+    { intros M0. rewrite (MM0 M0). exists Z_MEM_ERROR, m0. apply Zlib.proof.inflate.Steps2.stepf2_MEM. exact M0. }
+    destruct (stepf2 (f_flush F) lenfix_list distfix_list m) eqn:ES.
+    { first [pose proof (HNB _ eq_refl) as NB' | pose proof (HNB _ ES) as NB'].
+      split; [ | split; [ | split; [ | split; [ | split]]]];
+        [intuition congruence .. | intros M0; destruct (MB M0) as (? & ? & EB);
+          first [discriminate EB | rewrite ES in EB; discriminate EB]
+        | intros M1; exfalso; exact (NB' M1)]. }
+    first [pose proof (HSR _ _ eq_refl) as HSW | pose proof (HSR _ _ ES) as HSW].
+    first [pose proof (HRM _ _ eq_refl) as HRM' | pose proof (HRM _ _ ES) as HRM'].
+    split; [ | split; [ | split; [ | split; [exact HSW | intros M; exact (MM1 (HRM' M))]]]];
+      intuition congruence.
+  - exact MW.
+  - reflexivity.
+  - exact HD0.
+  - split; [exact OI | split; [reflexivity | split; [exact WI0 | split; [reflexivity | split; [intros _; reflexivity | intros M; exact M]]]]].
+  - intros r m' HL HW HDm (HWin & HWV & HIP & HSW & HMM).
+    apply (RET _ _ _ _ _ []); [reflexivity | reflexivity | reflexivity | reflexivity | ].
+    destruct (fin_ok5_live_za F m' (mwf3_fin_ok5_za m' HW HWV) HDm) as [HLV HZV]; [exact LP | exact LW | exact DT | ].
+    Exists (z_of F m') (Some (live_of F m')) (m_ow m').
+    apply andp_right.
+    + apply prop_right.
+      split; [ | split; [exact HSW | cbv beta iota; symmetry; apply win_ev_nomem;
+                         [exact (eq_trans HWin WIN0) | intros M; apply M0L, HMM, M]]].
+      right. split; [exact NB | ].
+      exists L, o, (Res r m' None), (l_winp L).
+      split; [reflexivity | ]. split; [reflexivity | ].
+      split; [exists (IRet r m'); split; [exact HL | reflexivity] | ].
+      split; [simpl; rewrite <- HIP; apply (mw_snx_za _ (mwf3_mwf_za _ HW)) | ].
+      split; [reflexivity | ]. split; [reflexivity | ]. split; [reflexivity | ].
+      split; [auto | reflexivity].
+    + rewrite ISL, app_nil_r. unfold X, xfr_za. sep_apply (@mem_rep_istream5_za ZA ZAV F m' HLV HZV WS NN).
+      unfold bufs_opt, F; cbn [f_gv f_shs f_strmp f_ib f_ob f_gsh f_tsh mkF]. cancel. }
+unfold loop_exit_za. apply semax_extract_exists. intro m. apply semax_extract_prop.
+intros (LP' & MW' & HDm & ML & (OI' & WI & WV & IPm & MM0 & MM1)).
+(* the loop left (leave = 1): the call did not start in MEM, its machine is not in MEM *)
+assert (MEQ: (i_mode (m_s m) =? MEM) = (i_mode (l_s L) =? MEM)).
+{ assert (N0: i_mode (m_s m0) <> MEM).
+  { intros M0. assert (E0: m_leave m0 = 0) by reflexivity. rewrite <- (MM0 M0) in E0. congruence. }
+  rewrite (proj2 (Z.eqb_neq _ _) (fun M => N0 (MM1 M))).
+  rewrite (proj2 (Z.eqb_neq _ _) (fun M => N0 (proj2 M0L M))). reflexivity. }
+apply (@exit_part5_za ZA ZAV _ F X tr m RR FOK MW' ML OI' WV); [assumption | assumption | ].
+intros res winp HIL HWP.
+destruct (leave_fin5_za flush m res MW' OI' WV HIL) as (SWr & FO & DTr & EH & EHd & EI).
+set (F' := set_f_winp_dt F winp (res_dt F res)).
+assert (HD': hd_ok F' (r_m res)).
+{ unfold hd_ok. rewrite EH, EHd. exact HDm. }
+assert (TK: hdr_tok F m = hdr_tok F' (r_m res)).
+{ unfold hdr_tok. rewrite EH, EHd. reflexivity. }
+rewrite TK.
+apply ENTAIL_sep_perm.
+apply (RET F' _ _ _ _ (win_ev (m_s m) (m_s (r_m res))));
+  [reflexivity | reflexivity | reflexivity | reflexivity | ].
+destruct (fin_ok5_live_za F' (r_m res) FO HD') as [HLV HZV].
+{ exact LP. }
+{ exact LW. }
+{ unfold F', res_dt. simpl. destruct (r_dtype res) eqn:ED; [apply DTr; reflexivity | exact DT]. }
+Exists (z_of F' (r_m res)) (Some (live_of F' (r_m res))) (m_ow (r_m res)).
+apply andp_right.
+- apply prop_right.
+  split; [ | split; [exact SWr | cbv beta iota;
+                     apply win_ev_congr; [rewrite WI; exact WIN0 | reflexivity | reflexivity | exact MEQ | reflexivity]]].
+  right. split; [exact NB | ].
+  exists L, o, res, winp.
+  split; [reflexivity | ]. split; [reflexivity | ].
+  split; [exists (IBrk m); split; [exact LP' | exact HIL] | ].
+  split; [destruct FO as (_ & _ & _ & _ & _ & FS & _); rewrite EI, IPm in FS; exact FS | ].
+  split; [reflexivity | ]. split; [reflexivity | ]. split; [reflexivity | ].
+  split; [ | reflexivity].
+  intros HW1. apply HWP. rewrite WI, WIN0. exact HW1.
+- rewrite ISL. unfold X, xfr_za. sep_apply (@mem_rep_istream5_za ZA ZAV F' (r_m res) HLV HZV WS NN).
+  unfold bufs_opt, F', F; cbn [f_gv f_shs f_strmp f_ib f_ob f_gsh f_tsh mkF set_f_winp_dt]. cancel.
+Qed.
+
+End ZAlloc.

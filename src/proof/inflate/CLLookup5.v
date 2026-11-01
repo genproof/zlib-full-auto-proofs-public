@@ -1,0 +1,281 @@
+(* case CODELENS: the table lookup loop for (;;) { here = state->lencode[BITS(state->lenbits)]; if (here.bits <= bits) break; PULLBYTE(); } (CLKit5.cl_lookup; model Model.v lookup1) *)
+Require Import VST.floyd.proofauto.
+Require Zlib.units.Inflate.
+Require Import Zlib.inflate.code.
+Require Import Zlib.proof.inflate.CLKit5.
+Require Import Zlib.proof.crc32.Spec.
+#[local] Existing Instance Zlib.units.Inflate.CS.
+Local Open Scope logic.
+
+Lemma cl_codes_at0: forall sp, field_compatible t_state (DOT _codes) sp ->
+  codes_at sp 0 = field_address t_state (DOT _codes) sp.
+Proof.
+  intros sp H. unfold codes_at.
+  assert (H0: field_compatible0 t_state (DOT _codes SUB 0) sp).
+  { eapply field_compatible0_cons_Tarray; [reflexivity | exact H | lia]. }
+  rewrite field_address0_offset by exact H0. rewrite field_address_offset by exact H.
+  reflexivity.
+Qed.
+
+Lemma cl_mask: forall n, 0 <= n < 32 ->
+  Int.sub (Int.shl (Int.repr 1) (Int.repr n)) (Int.repr 1) = Int.repr (2 ^ n - 1).
+Proof.
+  intros n Hn. rewrite Int.shl_mul_two_p. rewrite (Int.unsigned_repr n) by rep_lia.
+  rewrite two_p_equiv. rewrite Int.mul_commut, Int.mul_one. rewrite sub_repr. reflexivity.
+Qed.
+
+Lemma cl_index: forall h n, 0 <= n <= 15 ->
+  Int.and (Int.repr (Int64.Z_mod_modulus h)) (Int.sub (Int.shl (Int.repr 1) (Int.repr n)) (Int.repr 1)) =
+  Int.repr (h mod 2 ^ n).
+Proof.
+  intros h n Hn. rewrite cl_mask by lia. rewrite Int64.Z_mod_modulus_eq.
+  assert (M: 0 < Int64.modulus) by reflexivity.
+  rewrite cl_int_and_ones by (try apply Z.mod_pos_bound; lia). f_equal.
+  symmetry. apply Znumtheory.Zmod_div_mod.
+  - apply Z.pow_pos_nonneg; lia.
+  - exact M.
+  - exists (2 ^ (64 - n)). change Int64.modulus with (2 ^ 64). rewrite <- Z.pow_add_r by lia. f_equal. lia.
+Qed.
+
+Lemma cl_pullk: forall F k m,
+  m_s (pullk k m) = m_s m /\ cl_strm F (pullk k m) = cl_strm F m /\ mem_rest_cl F (pullk k m) = mem_rest_cl F m.
+Proof.
+  induction k; intros; simpl; auto.
+  destruct (IHk (pull m)) as (A & B & C). rewrite A, B, C. split; [|split]; reflexivity.
+Qed.
+
+Lemma cl_set_leave: forall F m,
+  m_s (set_leave m) = m_s m /\ cl_strm F (set_leave m) = cl_strm F m /\
+  mem_rest_cl F (set_leave m) = mem_rest_cl F m /\ m_inp (set_leave m) = m_inp m /\ m_aout (set_leave m) = m_aout m.
+Proof. intros. repeat split; reflexivity. Qed.
+
+Lemma cl_pull_fields: forall m,
+  m_nx (pull m) = m_nx m + 1 /\ m_have (pull m) = m_have m - 1 /\
+  m_hold (pull m) = u64 (m_hold m + Znth (m_nx m) (m_inp m) * 2 ^ m_bits m) /\
+  m_bits (pull m) = u32 (m_bits m + 8) /\ m_left (pull m) = m_left m /\ m_ow (pull m) = m_ow m /\
+  m_in (pull m) = m_in m /\ m_out (pull m) = m_out m /\ m_ret (pull m) = m_ret m /\ m_leave (pull m) = m_leave m.
+Proof. intros. unfold m_have. repeat split; try reflexivity. simpl. lia. Qed.
+
+Lemma cl_lookup1_S: forall k fx dx t nb m,
+  lookup1_f (S k) fx dx t nb m =
+  let here := tab_entry fx dx (m_s m) t (bitsn m nb) in
+  if e_bits here <=? m_bits m then (here, m, true)
+  else if m_have m =? 0 then (here, set_leave m, false)
+  else lookup1_f k fx dx t nb (pull m).
+Proof. reflexivity. Qed.
+
+Lemma cl_lookup_ok : cl_lookup_stmt.
+Proof.
+  unfold cl_lookup_stmt. intros Espec F m hv HF W HM HL.
+  rewrite loop_state_h_cl.
+  cl_stmt.
+  destruct (mw_md _ W) as [_ MC _ _ _ _ _ _ _].
+  destruct (MC HM) as (Hh & Hnl & Hnd & Hlc & Htv & Hlens).
+  destruct Htv as (sz & Hsz & Htv).
+  destruct F as [gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush].
+  unfold loop_state_clh, cl_sep, loop_locals. cbn [f_gv f_shs f_strmp f_sp f_headp f_winp f_hsh f_xb f_nb f_cb f_ib f_ob f_gsh f_tsh f_dt f_vres f_vhere f_vlast f_vhbuf f_flush].
+  rewrite Hlc. change (tref_val gv sp (TCodes 0)) with (codes_at sp 0).
+  assert_PROP (field_compatible t_state (DOT _codes) sp) by entailer!.
+  rewrite (cl_codes_at0 sp H).
+  rewrite (field_at_data_at Ews t_state (DOT _codes)).
+  set (q := field_address t_state (DOT _codes) sp).
+  abbreviate_semax.
+  set (lb := i_lenbits (m_s m)) in *.
+  set (codes := i_codes (m_s m)) in *.
+  rewrite Hlc in Hsz, Htv. unfold tab_size in Hsz.
+  destruct Htv as [Hlb Hsz2 Hroot].
+  destruct (sw_codes _ (mw_s _ W)) as [Hcl Hcok]. fold codes in Hcl, Hcok.
+  assert (Hent: forall i, 0 <= i < 2 ^ lb -> entry_ok (Znth i codes) /\ e_bits (Znth i codes) <= 15).
+  { intros i Hi. specialize (Hroot i Hi). cbv zeta in Hroot. unfold tab_entry in Hroot.
+    rewrite Z.add_0_l in Hroot. fold codes in Hroot. destruct Hroot as [Hok Hr].
+    split; [exact Hok|]. destruct (islink CODES (e_op (Znth i codes))).
+    - destruct Hr as (Hb & _). lia.
+    - lia. }
+  clear Hroot.
+  pose proof (mw_bits _ W) as WB. pose proof (mw_nx _ W) as WNX. pose proof (mw_inp _ W) as WINP.
+  forward_loop (@exp (environ -> mpred) _ nat (fun k => @exp (environ -> mpred) _ (reptype t_code) (fun hv' =>
+     PROPx [lookup1_f (3 - k) lenfix_list distfix_list (TCodes 0) lb (pullk k m) =
+             lookup1 lenfix_list distfix_list (TCodes 0) lb m;
+           m_bits (pullk k m) = (m_bits m + 8 * Z.of_nat k)%Z;
+           (0 < k)%nat -> (m_bits m + 8 * (Z.of_nat k - 1) < 15)%Z;
+           (m_nx m + Z.of_nat k <= Zlength (m_inp m))%Z;
+           in_ok ib (m_inp m); out_ok ob (m_aout m)]
+     (LOCALx (loop_locals (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) (pullk k m))
+     (SEPx [field_at Ews t_state (DOT _mode) (Vint (Int.repr (i_mode (m_s m)))) sp;
+          field_at Ews t_state (DOT _nlen) (Vint (Int.repr (i_nlen (m_s m)))) sp;
+          field_at Ews t_state (DOT _ndist) (Vint (Int.repr (i_ndist (m_s m)))) sp;
+          field_at Ews t_state (DOT _have) (Vint (Int.repr (i_have (m_s m)))) sp;
+          field_at Ews t_state (DOT _lens) (map (fun z : Z => Vint (Int.repr z)) (i_lens (m_s m))) sp;
+          field_at Ews t_state (DOT _next) (codes_at sp (i_next (m_s m))) sp;
+          field_at Ews t_state (DOT _lencode) q sp;
+          field_at Ews t_state (DOT _distcode) (tref_val gv sp (i_distcode (m_s m))) sp;
+          field_at Ews t_state (DOT _lenbits) (Vint (Int.repr lb)) sp;
+          field_at Ews t_state (DOT _distbits) (Vint (Int.repr (i_distbits (m_s m)))) sp;
+          data_at Ews (nested_field_type t_state (DOT _codes)) (map ent codes) q;
+          field_at_ Ews t_state (DOT _work) sp;
+          cl_strm (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m;
+          tables_rep gsh gv;
+          mem_rest_cl (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m;
+          data_at Tsh t_code hv' vhere; data_at_ Tsh t_code vlast; data_at_ Tsh (tarray tuchar 4) vhbuf])))))
+    break: (@exp (environ -> mpred) _ entry (fun here => @exp (environ -> mpred) _ mst (fun m1 => @exp (environ -> mpred) _ bool (fun ok =>
+     PROPx [lookup1 lenfix_list distfix_list (TCodes 0) lb m = (here, m1, ok);
+           m_s m1 = m_s m;
+           cl_strm (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m1 =
+           cl_strm (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m;
+           mem_rest_cl (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m1 =
+           mem_rest_cl (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m;
+           in_ok ib (m_inp m1); out_ok ob (m_aout m1)]
+     (LOCALx (loop_locals (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m1)
+     (SEPx [field_at Ews t_state (DOT _mode) (Vint (Int.repr (i_mode (m_s m)))) sp;
+          field_at Ews t_state (DOT _nlen) (Vint (Int.repr (i_nlen (m_s m)))) sp;
+          field_at Ews t_state (DOT _ndist) (Vint (Int.repr (i_ndist (m_s m)))) sp;
+          field_at Ews t_state (DOT _have) (Vint (Int.repr (i_have (m_s m)))) sp;
+          field_at Ews t_state (DOT _lens) (map (fun z : Z => Vint (Int.repr z)) (i_lens (m_s m))) sp;
+          field_at Ews t_state (DOT _next) (codes_at sp (i_next (m_s m))) sp;
+          field_at Ews t_state (DOT _lencode) q sp;
+          field_at Ews t_state (DOT _distcode) (tref_val gv sp (i_distcode (m_s m))) sp;
+          field_at Ews t_state (DOT _lenbits) (Vint (Int.repr lb)) sp;
+          field_at Ews t_state (DOT _distbits) (Vint (Int.repr (i_distbits (m_s m)))) sp;
+          data_at Ews (nested_field_type t_state (DOT _codes)) (map ent codes) q;
+          field_at_ Ews t_state (DOT _work) sp;
+          cl_strm (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m;
+          tables_rep gsh gv;
+          mem_rest_cl (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) m;
+          data_at Tsh t_code (ent here) vhere; data_at_ Tsh t_code vlast; data_at_ Tsh (tarray tuchar 4) vhbuf])))))).
+  - Exists 0%nat hv. unfold loop_locals. simpl pullk. entailer!.
+  - Intros k hv'.
+    destruct (pullk_fields k m) as (P1&P2&P3&P4&P5&P6&P7&P8&P9&P10).
+    unfold loop_locals. cbn [f_gv f_shs f_strmp f_sp f_headp f_winp f_hsh f_xb f_nb f_cb f_ib f_ob f_gsh f_tsh f_dt f_vres f_vhere f_vlast f_vhbuf f_flush].
+    assert (Hpow: 2 ^ lb <= 1444) by (unfold ENOUGH_CODES in Hsz; lia).
+    assert (Hk: (k <= 2)%nat).
+    { destruct (Nat.eq_dec k 0); [lia|].
+      match goal with Hx: (0 < k)%nat -> _ |- _ => specialize (Hx ltac:(lia)) end. lia. }
+    destruct (cl_pullk (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) k m)
+      as (Q1 & Q2 & Q3).
+    set (mk := pullk k m) in *.
+    assert (Emk: pullk k m = mk) by reflexivity. clearbody mk.
+    assert (Hix: 0 <= bitsn mk lb < 2 ^ lb) by (apply Z.mod_pos_bound, Z.pow_pos_nonneg; lia).
+    assert (HI: Int.and (Int.repr (Int64.Z_mod_modulus (m_hold mk)))
+                  (Int.sub (Int.shl (Int.repr 1) (Int.repr lb)) (Int.repr 1)) = Int.repr (bitsn mk lb))
+      by (unfold bitsn; apply cl_index; lia).
+    assert (HU: Int.unsigned (Int.repr (bitsn mk lb)) = bitsn mk lb) by (apply Int.unsigned_repr; rep_lia).
+    set (e := Znth (bitsn mk lb) codes).
+    assert (HZ: Znth (bitsn mk lb) (map ent codes) = ent e) by (unfold e; apply Znth_map; lia).
+    destruct (Hent _ Hix) as [Heok Heb]. fold e in Heok, Heb.
+    destruct Heok as (Heo & Heb2 & Hev).
+    Ltac cl_rd HI HU e :=
+      forward; [ apply prop_right; rewrite HI, HU; lia
+               | rewrite HI, HU, Znth_map by lia; fold e; unfold ent at 1; cbv beta iota; entailer!; rep_lia
+               | entailer!; change (Int.unsigned Int.iwordsize) with 32; lia
+               | rewrite HI, HU, Znth_map by lia; fold e; unfold ent at 1; cbv beta iota ].
+    forward. forward. cl_rd HI HU e. forward.
+    forward. forward. cl_rd HI HU e. forward.
+    forward. forward. cl_rd HI HU e. forward.
+    assert (Z1: Int.zero_ext 8 (Int.repr (e_op e)) = Int.repr (e_op e))
+      by (apply zero_ext_inrange; rewrite Int.unsigned_repr by rep_lia; simpl; lia).
+    assert (Z2: Int.zero_ext 8 (Int.repr (e_bits e)) = Int.repr (e_bits e))
+      by (apply zero_ext_inrange; rewrite Int.unsigned_repr by rep_lia; simpl; lia).
+    assert (Z3: Int.zero_ext 16 (Int.repr (e_val e)) = Int.repr (e_val e))
+      by (apply zero_ext_inrange; rewrite Int.unsigned_repr by rep_lia; simpl; lia).
+    rewrite Z1, Z2, Z3.
+    assert (Etab: tab_entry lenfix_list distfix_list (m_s mk) (TCodes 0) (bitsn mk lb) = e)
+      by (unfold tab_entry; rewrite P1, Z.add_0_l; reflexivity).
+    forward.
+    forward_if.
+    + forward.
+      assert (EL: lookup1 lenfix_list distfix_list (TCodes 0) lb m = (e, mk, true)).
+      { rewrite <- H0. replace (3 - k)%nat with (S (2 - k)) by lia. rewrite cl_lookup1_S. cbv zeta.
+        rewrite Etab. rewrite (proj2 (Z.leb_le _ _)) by lia. reflexivity. }
+      Exists e mk true.
+      unfold loop_locals; cbn [f_gv f_shs f_strmp f_sp f_headp f_winp f_hsh f_xb f_nb f_cb f_ib f_ob f_gsh f_tsh f_dt f_vres f_vhere f_vlast f_vhbuf f_flush].
+      rewrite P3, P4.
+      change (ent e) with (Vint (Int.repr (e_op e)), (Vint (Int.repr (e_bits e)), Vint (Int.repr (e_val e)))).
+      go_lower. apply andp_right; [apply prop_right | apply derives_refl].
+      split; [exact EL|]. split; [exact Q1|]. split; [exact Q2|]. split; [exact Q3|].
+      split; [exact H4|]. split; [exact H5|]. repeat split.
+    + assert (HH: 0 <= m_have mk <= Int.max_signed) by (unfold m_have; rewrite P3, P10; lia).
+      forward_if.
+      *
+        forward. forward.
+        assert (EL: lookup1 lenfix_list distfix_list (TCodes 0) lb m = (e, set_leave mk, false)).
+        { rewrite <- H0. replace (3 - k)%nat with (S (2 - k)) by lia. rewrite cl_lookup1_S. cbv zeta.
+          rewrite Etab. rewrite (proj2 (Z.leb_gt _ _)) by lia. rewrite H7. reflexivity. }
+        destruct (cl_set_leave (Fr gv shs strmp sp headp winp hsh xb nb cb ib ob gsh tsh dt vres vhere vlast vhbuf flush) mk)
+          as (L1 & L2 & L3 & L4 & L5).
+        Exists e (set_leave mk) false.
+        unfold loop_locals; cbn [f_gv f_shs f_strmp f_sp f_headp f_winp f_hsh f_xb f_nb f_cb f_ib f_ob f_gsh f_tsh f_dt f_vres f_vhere f_vlast f_vhbuf f_flush].
+        rewrite L4, L5, P3, P4, L1, L2, L3.
+        change (ent e) with (Vint (Int.repr (e_op e)), (Vint (Int.repr (e_bits e)), Vint (Int.repr (e_val e)))).
+        go_lower. apply andp_right; [apply prop_right | apply derives_refl].
+        split; [exact EL|]. split; [exact Q1|]. split; [exact Q2|]. split; [exact Q3|].
+        split; [exact H4|]. split; [exact H5|]. repeat split.
+      * clear MC Hent Hlens HZ.
+        forward.
+        destruct ib as [ | ish ip ilo inb ic].
+        { exfalso. unfold in_ok in H4. unfold m_have in H7. rewrite P3, P10, H4 in H7.
+          rewrite H4 in H3. rewrite Zlength_nil in *. lia. }
+        assert (Hj: 0 <= m_nx mk < Zlength (m_inp m)).
+        { unfold m_have in H7, HH. rewrite P3 in H7, HH. rewrite P10. lia. }
+        pose proof (in_byte _ _ _ _ _ _ (m_nx mk) H4 Hj) as HBYTE.
+        pose proof H4 as HINOK.
+        destruct H4 as (Hish & Hip & Hilo & Hinb & Hic & Hinbm & Hsub & Hbytes).
+        pose proof (bytes_ok_Znth _ _ Hbytes Hj) as HBR.
+        unfold mem_rest_cl at 1. cbn [in_ptr in_rep f_ib f_gv f_ob f_sp f_strmp f_headp f_winp f_tsh]. Intros.
+        forward.
+        forward.
+        assert_PROP (field_compatible (tarray tuchar inb) [] ip)
+          by (go_lower; sep_apply (data_at_local_facts ish (tarray tuchar inb) ic ip); entailer!).
+        rewrite (offset_val_field_address_tuchar inb (ilo + m_nx mk) ip) by (auto; lia).
+        forward.
+        { rewrite HBYTE. go_lower. apply prop_right. simpl. rewrite Int.unsigned_repr by rep_lia. rep_lia. }
+        rewrite HBYTE.
+        forward.
+        { go_lower. apply prop_right. change (Int.unsigned Int64.iwordsize') with 64.
+          rewrite Int.unsigned_repr by rep_lia. lia. }
+        forward.
+        assert (Epull: pullk (S k) m = pull mk) by (rewrite pullk_S, Emk; reflexivity).
+        destruct (cl_pull_fields mk) as (R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10).
+        assert (F1: lookup1_f (3 - S k) lenfix_list distfix_list (TCodes 0) lb (pull mk) =
+                    lookup1 lenfix_list distfix_list (TCodes 0) lb m).
+        { rewrite <- H0. replace (3 - k)%nat with (S (2 - k)) by lia. rewrite cl_lookup1_S. cbv zeta.
+          rewrite Etab. rewrite (proj2 (Z.leb_gt _ _)) by lia. rewrite (proj2 (Z.eqb_neq _ _)) by exact H7.
+          replace (3 - S k)%nat with (2 - k)%nat by lia. reflexivity. }
+        assert (F2: m_bits (pull mk) = m_bits m + 8 * Z.of_nat (S k)).
+        { rewrite R4. unfold u32. rewrite Z.mod_small by lia. rewrite Nat2Z.inj_succ. lia. }
+        assert (F3: (0 < S k)%nat -> m_bits m + 8 * (Z.of_nat (S k) - 1) < 15).
+        { intros _. rewrite Nat2Z.inj_succ. lia. }
+        assert (F4: m_nx m + Z.of_nat (S k) <= Zlength (m_inp m)) by (rewrite Nat2Z.inj_succ; lia).
+        Exists (S k) (ent e).
+        rewrite Epull.
+        unfold loop_locals; cbn [f_gv f_shs f_strmp f_sp f_headp f_winp f_hsh f_xb f_nb f_cb f_ib f_ob f_gsh f_tsh f_dt f_vres f_vhere f_vlast f_vhbuf f_flush in_ptr].
+        rewrite R1, R2, R3, R4, R5, R6, R7, R8, R9, R10.
+        change (ent e) with (Vint (Int.repr (e_op e)), (Vint (Int.repr (e_bits e)), Vint (Int.repr (e_val e)))).
+        unfold mem_rest_cl. cbn [in_rep f_ib f_gv f_ob f_sp f_strmp f_headp f_winp f_tsh].
+        go_lower.
+        apply andp_right; [apply prop_right | cancel].
+        split; [exact F1|]. split; [exact F2|]. split; [exact F3|]. split; [exact F4|].
+        split; [exact HINOK|]. split; [exact H5|]. repeat split.
+        all: try (f_equal; rewrite sub_repr; reflexivity).
+        all: try (rewrite cl_u32_repr, add_repr; reflexivity).
+        { rewrite <- (offset_val_field_address_tuchar inb (ilo + m_nx mk) ip) by (auto; lia).
+          destruct ip; try contradiction; simpl.
+          rewrite Ptrofs.add_assoc. f_equal.
+          change (Ptrofs.mul (Ptrofs.repr 1) (Ptrofs.of_ints (Int.repr 1))) with (Ptrofs.repr 1).
+          rewrite ptrofs_add_repr. f_equal. f_equal. lia. }
+        { rewrite P3. rewrite (Int.unsigned_repr (Znth (m_nx mk) (m_inp m))) by rep_lia.
+          rewrite (Int.unsigned_repr (m_bits mk)) by rep_lia. f_equal. apply hold_add_eq; lia. }
+  - (* after the loop *)
+    Intros here m1 ok.
+    Exists here m1 ok.
+    apply andp_right; [apply prop_right; assumption | ].
+    rewrite loop_state_h_cl. unfold loop_state_clh, cl_sep.
+    cbn [f_gv f_shs f_strmp f_sp f_headp f_winp f_hsh f_xb f_nb f_cb f_ib f_ob f_gsh f_tsh f_dt f_vres f_vhere f_vlast f_vhbuf f_flush].
+    match goal with Hs: m_s m1 = m_s m, Hc: cl_strm _ m1 = _, Hr: mem_rest_cl _ m1 = _ |- _ =>
+      rewrite Hs, Hc, Hr end.
+    rewrite Hlc. change (tref_val gv sp (TCodes 0)) with (codes_at sp 0).
+    rewrite (cl_codes_at0 sp H). rewrite (field_at_data_at Ews t_state (DOT _codes)). fold q codes lb.
+    unfold loop_locals.
+    cbn [f_gv f_shs f_strmp f_sp f_headp f_winp f_hsh f_xb f_nb f_cb f_ib f_ob f_gsh f_tsh f_dt f_vres f_vhere f_vlast f_vhbuf f_flush].
+    go_lower. apply andp_right; [apply prop_right | apply derives_refl].
+    split; [assumption|]. split; [assumption|]. repeat split.
+Qed.

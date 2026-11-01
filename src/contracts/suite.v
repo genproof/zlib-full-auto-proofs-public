@@ -3,9 +3,20 @@
    quickproof/tools/new_contract.py.
 
    Proving `suite` in one worktree makes all laws share one model and one
-   specification per function of the code under test.  It needs the proof of
-   every theorem in src/contracts/*.v: an Admitted law shows up in
-   Print Assumptions of `suite`.
+   specification per function of the code under test.  The statement of
+   `suite` below is the generated one: all 62 laws of the contract, on
+   the code with fixes F1-F9 (api_reset holds with F8, res_compress_bound
+   with F9).  Round 4 changed fifteen short laws and added three,
+   api_inflate_any, rt_stream_trailing and rt_session.
+   `suite_x` is the conjunction of the 17 x_ laws (the earlier suite),
+   proved from the parts of src/proof/ (one lemma per law or per area,
+   below), and x_crc32_ref from its theorem in
+   src/contracts/laws_checksums.v.  The 45 short laws are proved area by
+   area below (`suite_short_*`), one lemma per law or per bundle of laws
+   that share a proof, and the new laws of rounds 3 and 4 each by its
+   own lemma.  Each law of `suite` is also a theorem of its own, with
+   its generated name and statement, in src/contracts/laws.v
+   (x_crc32_ref in laws_checksums.v).
    ====================================================================== *)
 
 Require Import QuickProof.Contract.
@@ -72,6 +83,995 @@ Require Zlib.contracts.x_inflate_header.
 Require Zlib.contracts.x_inflate_reset.
 Require Zlib.contracts.x_uncompress_any.
 
+(* ---------------------------------------------------------------------- *)
+(* The laws, one helper lemma per law or per area.  Each lemma is proved    *)
+(* in its own region below, with the Requires of the modules of src/proof   *)
+(* it needs right above it.                                                 *)
+(* ---------------------------------------------------------------------- *)
+
+(* === crc32_ref (proved in src/contracts/laws_checksums.v) === *)
+
+Require Zlib.contracts.laws_checksums.
+
+Lemma suite_crc32_ref : harness_safe Zlib.contracts.x_crc32_ref.whole_prog.
+Proof. exact Zlib.contracts.laws_checksums.x_crc32_ref. Qed.
+
+(* === adler32_ref === *)
+
+Require Zlib.proof.adler32_ref.Law.
+Lemma suite_adler32_ref : harness_safe Zlib.contracts.x_adler32_ref.whole_prog.
+Proof.
+  exact Zlib.proof.adler32_ref.Law.adler32_ref_ok.
+Qed.
+
+(* === end adler32_ref === *)
+
+(* === adler32_combine_ref === *)
+
+Require Zlib.proof.adler32_combine_ref.Law.
+
+Lemma suite_adler32_combine_ref : harness_safe Zlib.contracts.x_adler32_combine_ref.whole_prog.
+Proof.
+  exact Zlib.proof.adler32_combine_ref.Law.adler32_combine_ref_ok.
+Qed.
+
+(* === end adler32_combine_ref === *)
+
+(* === crc32_combine_ref === *)
+
+Require Zlib.proof.crc32_combine_ref.Law.
+Lemma suite_crc32_combine_ref : harness_safe Zlib.contracts.x_crc32_combine_ref.whole_prog.
+Proof.
+  exact Zlib.proof.crc32_combine_ref.Law.crc32_combine_ref_ok.
+Qed.
+
+(* === end crc32_combine_ref === *)
+
+(* === the inflate area: the eight laws of inflate.c / inffast.c / inftrees.c / uncompr.c === *)
+
+Require Zlib.proof.inflate_api.LibProof5.
+Require Zlib.proof.uncompr.UBodies5.
+Require Zlib.proof.harness.inflate_buffers.LawIB.
+Require Zlib.proof.harness.inflate_check.LawIK.
+Require Zlib.proof.harness.inflate_codes.Law5.
+Require Zlib.proof.harness.inflate_decode.LawID.
+Require Zlib.proof.harness.inflate_dict.LawIT.
+Require Zlib.proof.harness.inflate_header.LawIH.
+Require Zlib.proof.harness.inflate_reset.LawIR.
+Require Zlib.proof.harness.uncompress_any.LawUA.
+
+Lemma suite_inflate :
+  harness_safe Zlib.contracts.x_inflate_buffers.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_check.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_codes.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_decode.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_dict.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_header.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_reset.whole_prog /\
+  harness_safe Zlib.contracts.x_uncompress_any.whole_prog.
+Proof.
+  pose proof Zlib.proof.inflate_api.LibProof5.inflate_lib5_proof as H.
+  split; [exact (Zlib.proof.harness.inflate_buffers.LawIB.law5_inflate_buffers H) |].
+  split; [exact (Zlib.proof.harness.inflate_check.LawIK.law5_inflate_check H) |].
+  split; [exact (Zlib.proof.harness.inflate_codes.Law5.law5_inflate_codes H) |].
+  split; [exact (Zlib.proof.harness.inflate_decode.LawID.law5_inflate_decode H) |].
+  split; [exact (Zlib.proof.harness.inflate_dict.LawIT.law5_inflate_dict H) |].
+  split; [exact (Zlib.proof.harness.inflate_header.LawIH.law5_inflate_header H) |].
+  split; [exact (Zlib.proof.harness.inflate_reset.LawIR.law5_inflate_reset H) |].
+  exact (Zlib.proof.harness.uncompress_any.LawUA.law5_uncompress_any H
+           Zlib.proof.uncompr.UBodies5.uncompr_bodies5).
+Qed.
+
+(* === end inflate area === *)
+
+(* === the deflate area: the three laws of deflate.c / trees.c without inflate === *)
+
+Require Zlib.proof.deflate.Laws9 Zlib.proof.huffman.Lemmas.
+Require Zlib.proof.trees.Body_bits Zlib.proof.trees.Body_build Zlib.proof.trees.Body_scan
+        Zlib.proof.trees.Body_send Zlib.proof.trees.Body_flush.
+Require Zlib.proof.deflate.Body_leaf Zlib.proof.deflate.Body_window Zlib.proof.deflate.Body_stored
+        Zlib.proof.deflate.Body_compress Zlib.proof.deflate.Body_api Zlib.proof.deflate.Body_api9
+        Zlib.proof.deflate.Body_deflate.
+
+Lemma suite_deflate :
+  harness_safe Zlib.contracts.x_deflate_api.whole_prog /\
+  harness_safe Zlib.contracts.x_deflate_bound.whole_prog /\
+  harness_safe Zlib.contracts.x_deflate_bound_split.whole_prog.
+Proof.
+  destruct Zlib.proof.huffman.Lemmas.huffman_lemmas as [Hi Hii].
+  apply Zlib.proof.deflate.Laws9.deflate_laws9; [ | | exact Hi | exact Hii].
+  - unfold Zlib.proof.deflate.Obligations.trees_bodies_ok.
+    destruct Zlib.proof.trees.Body_bits.trees_bits as (? & ? & ? & ?).
+    destruct Zlib.proof.trees.Body_build.trees_build as (? & ? & ? & ?).
+    destruct Zlib.proof.trees.Body_scan.trees_scan as (? & ? & ? & ? & ? & ?).
+    destruct Zlib.proof.trees.Body_send.trees_send as (? & ? & ? & ? & ?).
+    pose proof Zlib.proof.trees.Body_flush.trees_flush.
+    repeat (split; [assumption | ]); assumption.
+  - unfold Zlib.proof.deflate.Obligations9.deflate_bodies_ok9.
+    destruct Zlib.proof.deflate.Body_leaf.deflate_leaf as (? & ? & ? & ? & ? & ?).
+    destruct Zlib.proof.deflate.Body_window.deflate_window as (? & ?).
+    pose proof Zlib.proof.deflate.Body_stored.deflate_stored_body.
+    destruct Zlib.proof.deflate.Body_compress.deflate_compress as (? & ? & ? & ?).
+    destruct Zlib.proof.deflate.Body_api.deflate_api_bodies as (? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ?).
+    destruct Zlib.proof.deflate.Body_api9.deflate_api_bodies9 as (? & ? & ?).
+    destruct Zlib.proof.deflate.Body_deflate.deflate_main_bodies as (? & ?).
+    repeat (split; [assumption | ]); assumption.
+Qed.
+
+(* === end deflate area === *)
+
+(* === the round trips (deflate + inflate) === *)
+
+Require Zlib.proof.roundtrip.RoundTrips.
+Require Zlib.proof.rfc1951.Decode.
+Require Zlib.proof.rfc1951.DecKit Zlib.proof.rfc1951.TabDec Zlib.proof.rfc1951.DecMwf Zlib.proof.rfc1951.DecHdr
+        Zlib.proof.rfc1951.DecType Zlib.proof.rfc1951.DecTab Zlib.proof.rfc1951.DecDec Zlib.proof.rfc1951.DecFast
+        Zlib.proof.rfc1951.DecTrl Zlib.proof.rfc1951.DecCall.
+
+(* the parts of the decode theory (rfc1951), as Zlib.proof.harness.inflate_dict.ITDecV4 uses them *)
+Lemma suite_decode_parts : Zlib.proof.rfc1951.Decode.decode_parts.
+Proof.
+  exact (conj Zlib.proof.rfc1951.DecKit.dkit (conj Zlib.proof.rfc1951.TabDec.tabdec
+    (conj Zlib.proof.rfc1951.DecMwf.dm_stepf2_mwf3
+    (conj (proj1 Zlib.proof.rfc1951.DecHdr.dec_hdr_part) (conj (proj2 Zlib.proof.rfc1951.DecHdr.dec_hdr_part)
+    (conj Zlib.proof.rfc1951.DecType.group_type (conj Zlib.proof.rfc1951.DecTab.group_tab
+    (conj Zlib.proof.rfc1951.DecDec.group_dec (conj Zlib.proof.rfc1951.DecFast.dfast
+    (conj Zlib.proof.rfc1951.DecTrl.group_trl Zlib.proof.rfc1951.DecCall.dec_call)))))))))).
+Qed.
+
+Lemma suite_trees_bodies : Zlib.proof.deflate.Obligations.trees_bodies_ok.
+Proof.
+  unfold Zlib.proof.deflate.Obligations.trees_bodies_ok.
+  destruct Zlib.proof.trees.Body_bits.trees_bits as (? & ? & ? & ?).
+  destruct Zlib.proof.trees.Body_build.trees_build as (? & ? & ? & ?).
+  destruct Zlib.proof.trees.Body_scan.trees_scan as (? & ? & ? & ? & ? & ?).
+  destruct Zlib.proof.trees.Body_send.trees_send as (? & ? & ? & ? & ?).
+  pose proof Zlib.proof.trees.Body_flush.trees_flush.
+  repeat (split; [assumption | ]); assumption.
+Qed.
+
+Lemma suite_deflate_bodies9 : Zlib.proof.deflate.Obligations9.deflate_bodies_ok9.
+Proof.
+  unfold Zlib.proof.deflate.Obligations9.deflate_bodies_ok9.
+  destruct Zlib.proof.deflate.Body_leaf.deflate_leaf as (? & ? & ? & ? & ? & ?).
+  destruct Zlib.proof.deflate.Body_window.deflate_window as (? & ?).
+  pose proof Zlib.proof.deflate.Body_stored.deflate_stored_body.
+  destruct Zlib.proof.deflate.Body_compress.deflate_compress as (? & ? & ? & ?).
+  destruct Zlib.proof.deflate.Body_api.deflate_api_bodies as (? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ? & ?).
+  destruct Zlib.proof.deflate.Body_api9.deflate_api_bodies9 as (? & ? & ?).
+  destruct Zlib.proof.deflate.Body_deflate.deflate_main_bodies as (? & ?).
+  repeat (split; [assumption | ]); assumption.
+Qed.
+
+Lemma suite_roundtrips :
+  harness_safe Zlib.contracts.x_compress_roundtrip.whole_prog /\
+  harness_safe Zlib.contracts.x_deflate_roundtrip.whole_prog.
+Proof.
+  exact (Zlib.proof.roundtrip.RoundTrips.roundtrip_laws
+    Zlib.proof.inflate_api.LibProof5.inflate_lib5_proof Zlib.proof.uncompr.UBodies5.uncompr_bodies5
+    suite_decode_parts suite_trees_bodies suite_deflate_bodies9
+    (proj1 Zlib.proof.huffman.Lemmas.huffman_lemmas) (proj2 Zlib.proof.huffman.Lemmas.huffman_lemmas)).
+Qed.
+
+Lemma suite_compress_roundtrip : harness_safe Zlib.contracts.x_compress_roundtrip.whole_prog.
+Proof. exact (proj1 suite_roundtrips). Qed.
+
+Lemma suite_deflate_roundtrip : harness_safe Zlib.contracts.x_deflate_roundtrip.whole_prog.
+Proof. exact (proj2 suite_roundtrips). Qed.
+
+(* === end round trips === *)
+
+Lemma suite_x :
+  harness_safe Zlib.contracts.x_adler32_combine_ref.whole_prog /\
+  harness_safe Zlib.contracts.x_adler32_ref.whole_prog /\
+  harness_safe Zlib.contracts.x_compress_roundtrip.whole_prog /\
+  harness_safe Zlib.contracts.x_crc32_combine_ref.whole_prog /\
+  harness_safe Zlib.contracts.x_crc32_ref.whole_prog /\
+  harness_safe Zlib.contracts.x_deflate_api.whole_prog /\
+  harness_safe Zlib.contracts.x_deflate_bound.whole_prog /\
+  harness_safe Zlib.contracts.x_deflate_bound_split.whole_prog /\
+  harness_safe Zlib.contracts.x_deflate_roundtrip.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_buffers.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_check.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_codes.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_decode.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_dict.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_header.whole_prog /\
+  harness_safe Zlib.contracts.x_inflate_reset.whole_prog /\
+  harness_safe Zlib.contracts.x_uncompress_any.whole_prog.
+Proof.
+  destruct suite_inflate as (Hib & Hich & Hico & Hide & Hidi & Hih & Hir & Hu).
+  destruct suite_deflate as (Hda & Hdb & Hdbs).
+  exact (conj suite_adler32_combine_ref (conj suite_adler32_ref (conj suite_compress_roundtrip
+    (conj suite_crc32_combine_ref (conj suite_crc32_ref (conj Hda (conj Hdb (conj Hdbs
+    (conj suite_deflate_roundtrip (conj Hib (conj Hich (conj Hico (conj Hide (conj Hidi
+    (conj Hih (conj Hir Hu)))))))))))))))).
+Qed.
+
+(* === the helpers of harness/laws_common.h (one specification each, shared by the short laws) === *)
+
+Require Import Zlib.proof.harness.laws_common.Spec.
+Require Zlib.proof.harness.laws_common.Bodies.
+
+(* === end laws_common === *)
+
+(* The short laws, by area.  Each area lemma takes the bodies of the laws_common.h helpers as its
+   hypothesis (Spec.laws_common_ok, proved in Bodies.v), so that the areas and the helpers are proved
+   independently. *)
+
+(* === suite_short_checksums: the checksum laws (adler32.c, crc32.c) === *)
+
+(* Law ck_adler32: adler32_z against the RFC 1950 sums computed by the harness. *)
+Require Zlib.proof.harness.ck_adler32.Law.
+Lemma short_ck_adler32 : laws_common_ok -> harness_safe Zlib.contracts.ck_adler32.whole_prog.
+Proof.
+  intros L. exact (Zlib.proof.harness.ck_adler32.Law.ck_adler32_ok L).
+Qed.
+
+Require Zlib.proof.harness.ck_adler32_combine.Law.
+(* Law ck_adler32_combine: adler32_combine of the checksums of two parts is the checksum of the whole. *)
+Lemma short_ck_adler32_combine : laws_common_ok -> harness_safe Zlib.contracts.ck_adler32_combine.whole_prog.
+Proof.
+  intros L. exact (Zlib.proof.harness.ck_adler32_combine.Law.ck_adler32_combine_ok L).
+Qed.
+
+(* Law ck_adler32_null: adler32_z with a Z_NULL buffer returns 1. *)
+Require Zlib.proof.harness.ck_adler32_null.Law.
+Lemma short_ck_adler32_null : laws_common_ok -> harness_safe Zlib.contracts.ck_adler32_null.whole_prog.
+Proof.
+  intros L. exact (Zlib.proof.harness.ck_adler32_null.Law.ck_adler32_null_ok L).
+Qed.
+
+Require Zlib.proof.harness.ck_crc32.Law.
+(* Law ck_crc32: crc32_z against the bit-by-bit CRC-32 computed by the harness. *)
+Lemma short_ck_crc32 : laws_common_ok -> harness_safe Zlib.contracts.ck_crc32.whole_prog.
+Proof.
+  intros L. exact (Zlib.proof.harness.ck_crc32.Law.ck_crc32_ok L).
+Qed.
+
+(* Law ck_crc32_combine: crc32_combine and crc32_combine_op/crc32_combine_gen of two parts' CRCs give the CRC of the whole. *)
+Require Zlib.proof.harness.ck_crc32_combine.Law.
+Lemma short_ck_crc32_combine : laws_common_ok -> harness_safe Zlib.contracts.ck_crc32_combine.whole_prog.
+Proof.
+  intros L. exact (Zlib.proof.harness.ck_crc32_combine.Law.ck_crc32_combine_ok L).
+Qed.
+
+(* Law ck_crc32_null: crc32_z with a Z_NULL buffer returns 0. *)
+Require Zlib.proof.harness.ck_crc32_null.Law.
+Lemma short_ck_crc32_null : laws_common_ok -> harness_safe Zlib.contracts.ck_crc32_null.whole_prog.
+Proof.
+  intros L. exact (Zlib.proof.harness.ck_crc32_null.Law.ck_crc32_null_ok L).
+Qed.
+
+Require Zlib.proof.harness.rj_crc32_negative.Law.
+(* Law rj_crc32_negative: crc32_combine and crc32_combine_gen return 0 for a negative length. *)
+Lemma short_rj_crc32_negative : laws_common_ok -> harness_safe Zlib.contracts.rj_crc32_negative.whole_prog.
+Proof.
+  intros L. exact (Zlib.proof.harness.rj_crc32_negative.Law.rj_crc32_negative_ok L).
+Qed.
+
+Lemma suite_short_checksums : laws_common_ok ->
+  harness_safe Zlib.contracts.ck_adler32.whole_prog /\
+  harness_safe Zlib.contracts.ck_adler32_combine.whole_prog /\
+  harness_safe Zlib.contracts.ck_adler32_null.whole_prog /\
+  harness_safe Zlib.contracts.ck_crc32.whole_prog /\
+  harness_safe Zlib.contracts.ck_crc32_combine.whole_prog /\
+  harness_safe Zlib.contracts.ck_crc32_null.whole_prog /\
+  harness_safe Zlib.contracts.rj_crc32_negative.whole_prog.
+Proof.
+  intros L.
+  exact (conj (short_ck_adler32 L) (conj (short_ck_adler32_combine L) (conj (short_ck_adler32_null L)
+    (conj (short_ck_crc32 L) (conj (short_ck_crc32_combine L) (conj (short_ck_crc32_null L)
+    (short_rj_crc32_negative L))))))).
+Qed.
+
+(* === end suite_short_checksums === *)
+
+(* === suite_short_deflate: the laws of deflate alone (deflate.c, trees.c, compress.c), zlib's own allocator === *)
+
+(* The area is proved in four parts; each part's proof (and its Requires) stays between its own markers. *)
+
+(* --- short_rj_deflate_params: deflateInit2's parameter check --- *)
+
+Require Zlib.proof.deflate.LawTheory Zlib.proof.harness.rj_deflate_params.RJPMain Zlib.proof.harness.rj_deflate_params.RJPLaw.
+
+Lemma short_rj_deflate_params : laws_common_ok ->
+  harness_safe Zlib.contracts.rj_deflate_params.whole_prog.
+Proof.
+  intro L.
+  destruct Zlib.proof.huffman.Lemmas.huffman_lemmas as [Hi Hii].
+  destruct (Zlib.proof.deflate.LawTheory.law_theory Hi Hii) as [AF _].
+  exact (Zlib.proof.harness.rj_deflate_params.RJPLaw.law_of_main
+    Zlib.proof.harness.rj_deflate_params.RJPMain.body_main AF suite_trees_bodies suite_deflate_bodies9 L).
+Qed.
+
+(* --- end short_rj_deflate_params --- *)
+
+(* --- short_bounds: compress2 with a bad level, compressBound and deflateBound as output space --- *)
+
+(* rj_bad_level: compress2 / compress2_z by their specifications for any sizes (RTCSpecW.v, bodies
+   RTCBodiesW.rtc_w_bodies). *)
+Require Zlib.proof.harness.rj_bad_level.Law Zlib.proof.roundtrip.RTCBodiesW.
+
+Lemma short_rj_bad_level : laws_common_ok -> harness_safe Zlib.contracts.rj_bad_level.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.rj_bad_level.Law.rj_bad_level_ok L Zlib.proof.roundtrip.RTCBodiesW.rtc_w_bodies).
+Qed.
+
+(* res_bound: the deflateBound accounting for any parameters in zlib.h's ranges, a dictionary of up to 2^32-1 bytes
+   or a gzip header (name and comment of up to 2^32-2 bytes each) and one deflate(Z_FINISH) of up to 2^32-1 bytes,
+   and the stream's fields after it (all of the data read, total_in and total_out counted).  From the body of the
+   harness's main (src/proof/harness/res_bound/RB*.v: RBAsm.res_bound_ok with the first part of main,
+   RBPre.part_pre), which takes LawFactsW.bound_facts_w and LTWBOnce.once_acct_w from LTWBOnce.bound_theory_acct
+   (the wide core LTWCore, the header stages LTWHdr and lemma (ii)) and the body of deflate_params_ok from
+   laws_session/Bodies.v. *)
+Require Zlib.proof.deflate.LTWCore.
+Require Zlib.proof.deflate.LTWHdr.
+Require Zlib.proof.harness.res_bound.RBPre.
+Require Zlib.proof.harness.res_bound.RBAsm.
+
+Lemma short_res_bound : laws_common_ok -> harness_safe Zlib.contracts.res_bound.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.res_bound.RBAsm.res_bound_ok Zlib.proof.harness.res_bound.RBPre.part_pre L).
+Qed.
+
+(* res_compress_bound: compress2_z into compressBound_z(sourceLen) bytes never runs out of room.  It holds with
+   fix F9: before it, deflate_stored compared a block length with left + strm->avail_in in
+   32-bit arithmetic, which wraps at the Z_FINISH call of compress2_z for some inputs over 51 TiB at level 0
+   (data_len = 56298431302699: a short last stored block with input left, Z_BUF_ERROR).  The law follows from the body of the harness's main and compress2_z's
+   specification for any sizes (harness/res_compress_bound/Law.v, RTCBodiesW.rtc_w_bodies) and the model fact
+   RTC2W.c2w_bound_stmt (short_c2w_bound below). *)
+Require Zlib.proof.harness.res_compress_bound.Law Zlib.proof.roundtrip.RTC2W.
+
+(* compress2_z's model run with destLen = compressBound_z(n) succeeds for any n (RTC2W.c2w_bound_stmt):
+   RTC2WLoop.c2w_bound derives it from the deflateBound accounting of compress2_z's loop, LawFactsC2W.c2_facts
+   (a bound below 2^32: one deflate(Z_FINISH) call ends the stream; above: every call of the loop returns Z_OK
+   with progress or Z_STREAM_END, and the output space never runs out before the end of the stream, with a
+   margin of a byte for n >= 2^25).  LTWC2Thm.c2_facts_thm proves the accounting from the wide core theory, whose
+   deflate_stored compares in 64 bits with fix F9. *)
+Require Zlib.proof.roundtrip.RTC2WLoop.
+Require Zlib.proof.deflate.LTWC2Thm.
+
+Lemma short_c2w_bound : Zlib.proof.roundtrip.RTC2W.c2w_bound_stmt.
+Proof.
+  exact (Zlib.proof.roundtrip.RTC2WLoop.c2w_bound Zlib.proof.deflate.LTWC2Thm.c2_facts_thm).
+Qed.
+
+Lemma short_res_compress_bound : laws_common_ok -> harness_safe Zlib.contracts.res_compress_bound.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.res_compress_bound.Law.res_compress_bound_ok L Zlib.proof.roundtrip.RTCBodiesW.rtc_w_bodies
+           short_c2w_bound).
+Qed.
+
+Lemma short_bounds : laws_common_ok ->
+  harness_safe Zlib.contracts.rj_bad_level.whole_prog /\
+  harness_safe Zlib.contracts.res_compress_bound.whole_prog /\
+  harness_safe Zlib.contracts.res_bound.whole_prog.
+Proof.
+  intro L.
+  exact (conj (short_rj_bad_level L) (conj (short_res_compress_bound L) (short_res_bound L))).
+Qed.
+
+(* --- end short_bounds --- *)
+
+(* --- short_rfc_level0: the stored blocks of level 0 --- *)
+
+(* rfc_level0_size and rfc_level0_blocks: data of any length, given to deflate() in pieces of 1 to 65531 whole
+   blocks of 65535 bytes, the rest last with Z_FINISH.  The facts of the deflate loop at level 0 are proved from the
+   model of deflate: Level0Calls.l0_facts (Level0CallsProof.l0_facts_thm), which also allows a gzip trailer cut
+   at the first call's 2^32 - 1 bytes of output (possible with 65532 blocks per call), and the stronger
+   Level0CallsFit.l0_fit_facts (Level0CallsFitProof.l0_fit_thm) for calls of at most 65531 blocks, where the
+   trailer always fits and the loop ends with Z_STREAM_END.
+
+   rfc_level0_size: the body of its main against l0_fit_facts at the harness's parameters (L0S2Main.body_main2,
+   L0S2MainStmt.l0s_kmax, l0s_slack) and the assembly (L0S2Law.l0s2_law_fit).
+   rfc_level0_blocks: the body of its main against l0_facts (L0B2Main.body_main2) and the assembly
+   (L0B2Law.l0b2_law). *)
+Require Zlib.proof.deflate.Level0CallsProof.
+Require Zlib.proof.harness.rfc_level0_size.L0S2Law.
+
+Lemma short_rfc_level0_size : laws_common_ok -> harness_safe Zlib.contracts.rfc_level0_size.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.rfc_level0_size.L0S2Law.l0s2_law_fit L suite_trees_bodies suite_deflate_bodies9
+           Zlib.proof.harness.rfc_level0_size.L0S2Law.l0s_params_ok).
+Qed.
+
+(* rfc_level0_blocks compares the stored blocks with a copy of the data made with copy_of before the deflate()
+   calls: the body of its main against l0_facts (L0B2Main.body_main2; the copy is carried, untouched, from
+   copy_of to the check of the blocks) and the assembly (L0B2Law.l0b2_law). *)
+Require Zlib.proof.harness.rfc_level0_blocks.L0B2Main.
+Require Zlib.proof.harness.rfc_level0_blocks.L0B2Law.
+
+Lemma short_rfc_level0_blocks : laws_common_ok -> harness_safe Zlib.contracts.rfc_level0_blocks.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.rfc_level0_blocks.L0B2Law.l0b2_law L
+           Zlib.proof.harness.rfc_level0_blocks.L0B2Main.body_main2
+           Zlib.proof.deflate.Level0CallsProof.l0_facts_thm suite_trees_bodies suite_deflate_bodies9).
+Qed.
+
+Lemma short_rfc_level0 : laws_common_ok ->
+  harness_safe Zlib.contracts.rfc_level0_size.whole_prog /\
+  harness_safe Zlib.contracts.rfc_level0_blocks.whole_prog.
+Proof.
+  intro L. exact (conj (short_rfc_level0_size L) (short_rfc_level0_blocks L)).
+Qed.
+
+(* --- end short_rfc_level0 --- *)
+
+(* --- short_api_deterministic: two streams driven by the same calls behave the same --- *)
+
+(* api_deterministic: data of any length, given to deflate() in pieces of at most 2^32-1 bytes (take =
+   clip(offered - read)), Z_FINISH once the rest fits in one call; the parameters of deflateInit2 in zlib.h's
+   ranges (gp_assume(deflate_params_ok(...))), so that both inits return Z_OK unless memory runs out.  The body of
+   the harness's main (DetMain2.body_main, at DCS.CS; its parts DetPrefix2, DetPre2, DetParams2, DetCall2, DetCheck2
+   over the kit DetKit2), the model facts det_facts2 (DetTheory2.det_theory2: the invariant RTK7Defs.Iapi7 with the
+   output kept short) and the body of deflate_params_ok (laws_session/Bodies.v) give the law
+   (DetLaw2.law_of_main2).  The model facts rest on deflate() on Iapi7 for calls of the C
+   types' sizes (RTK7Api.rtk7_api_deflate), whose compression stage is RTK7Nocut.comp_nocut7 (fix F9). *)
+Require Zlib.proof.roundtrip.RTK7Api.
+Require Zlib.proof.roundtrip.RTK7Nocut.
+Require Zlib.proof.deflate.DetTheory2.
+Require Zlib.proof.harness.api_deterministic.DetMain2.
+Require Zlib.proof.harness.api_deterministic.DetLaw2.
+Require Zlib.proof.harness.laws_session.Bodies.
+
+Lemma short_api_deterministic : laws_common_ok ->
+  harness_safe Zlib.contracts.api_deterministic.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.api_deterministic.DetLaw2.law_of_main2
+    Zlib.proof.harness.api_deterministic.DetMain2.body_main
+    (Zlib.proof.deflate.DetTheory2.det_theory2
+       (Zlib.proof.roundtrip.RTK7Api.rtk7_api_deflate Zlib.proof.roundtrip.RTK7Nocut.comp_nocut7))
+    suite_trees_bodies suite_deflate_bodies9 L
+    Zlib.proof.harness.laws_session.Bodies.laws_session_bodies).
+Qed.
+
+(* --- end short_api_deterministic --- *)
+
+(* The area with res_compress_bound as a hypothesis: every other law of the area is proved from the bodies
+   (closed under the global context); res_compress_bound enters as short_res_compress_bound above. *)
+Lemma suite_short_deflate_core : laws_common_ok ->
+  harness_safe Zlib.contracts.res_compress_bound.whole_prog ->
+  harness_safe Zlib.contracts.rj_bad_level.whole_prog /\
+  harness_safe Zlib.contracts.rj_deflate_params.whole_prog /\
+  harness_safe Zlib.contracts.res_compress_bound.whole_prog /\
+  harness_safe Zlib.contracts.res_bound.whole_prog /\
+  harness_safe Zlib.contracts.rfc_level0_size.whole_prog /\
+  harness_safe Zlib.contracts.rfc_level0_blocks.whole_prog /\
+  harness_safe Zlib.contracts.api_deterministic.whole_prog.
+Proof.
+  intros L Rcb.
+  destruct (short_rfc_level0 L) as (L0s & L0b).
+  exact (conj (short_rj_bad_level L) (conj (short_rj_deflate_params L) (conj Rcb (conj (short_res_bound L)
+    (conj L0s (conj L0b (short_api_deterministic L))))))).
+Qed.
+
+Lemma suite_short_deflate : laws_common_ok ->
+  harness_safe Zlib.contracts.rj_bad_level.whole_prog /\
+  harness_safe Zlib.contracts.rj_deflate_params.whole_prog /\
+  harness_safe Zlib.contracts.res_compress_bound.whole_prog /\
+  harness_safe Zlib.contracts.res_bound.whole_prog /\
+  harness_safe Zlib.contracts.rfc_level0_size.whole_prog /\
+  harness_safe Zlib.contracts.rfc_level0_blocks.whole_prog /\
+  harness_safe Zlib.contracts.api_deterministic.whole_prog.
+Proof.
+  intro L. exact (suite_short_deflate_core L (short_res_compress_bound L)).
+Qed.
+
+(* === end suite_short_deflate === *)
+
+(* === suite_short_inflate: the laws of inflate alone (inflate.c, inffast.c, inftrees.c), zlib's own allocator === *)
+Require Zlib.proof.harness.rj_inflate_params.Law.
+Require Zlib.proof.harness.inflate_pieces.Laws.
+Require Zlib.proof.harness.api_split_invariant.Law.
+Require Zlib.proof.harness.rj_bad_header.Law.
+Require Zlib.proof.harness.bit_writer.Laws.
+
+(* rj_any_input, api_counters and api_untouched_output: main loops over inflate() calls with any input and output
+   pieces (src/proof/harness/inflate_pieces/). *)
+Lemma short_inflate_pieces : laws_common_ok ->
+  harness_safe Zlib.contracts.rj_any_input.whole_prog /\
+  harness_safe Zlib.contracts.api_counters.whole_prog /\
+  harness_safe Zlib.contracts.api_untouched_output.whole_prog.
+Proof.
+  intro L. exact (Zlib.proof.harness.inflate_pieces.Laws.inflate_pieces_ok L).
+Qed.
+
+(* rj_bad_block and rj_far_back: streams written bit by bit (src/proof/harness/bit_writer/): main in segments
+   (BBMain.v, FBMain.v), the theory of the inflate() calls (BBTheory.v, FBTheory.v), assembled in BWLawAsm.v. *)
+Require Zlib.proof.harness.bit_writer.Laws.
+Lemma short_bit_writer : laws_common_ok ->
+  harness_safe Zlib.contracts.rj_bad_block.whole_prog /\
+  harness_safe Zlib.contracts.rj_far_back.whole_prog.
+Proof.
+  intro L. exact (Zlib.proof.harness.bit_writer.Laws.bit_writer_laws_ok L).
+Qed.
+
+(* api_split_invariant (src/proof/harness/api_split_invariant/): main cut into segments (SIMain*.v; the split stream
+   reads its own copy of the input, made by copy_of before the one call) over the abstract decoder's theory
+   (SITheory.v), assembled with inflate.c's wide bodies (SILawAsm.v). *)
+Lemma short_api_split_invariant : laws_common_ok -> harness_safe Zlib.contracts.api_split_invariant.whole_prog.
+Proof.
+  intro L. exact (Zlib.proof.harness.api_split_invariant.Law.api_split_invariant_ok L).
+Qed.
+
+(* rj_bad_header (src/proof/harness/rj_bad_header/) *)
+Lemma short_rj_bad_header : laws_common_ok -> harness_safe Zlib.contracts.rj_bad_header.whole_prog.
+Proof.
+  intro L. exact (Zlib.proof.harness.rj_bad_header.Law.rj_bad_header_ok L).
+Qed.
+
+(* api_reset: after any use, inflateReset makes a stream behave exactly like a new one from inflateInit2 with the
+   same windowBits, call by call (harness/api_reset.c).  It holds with fix F8: before it,
+   inflateReset kept the window size that the last zlib or gzip header had set when windowBits asked for the size of
+   the header (0, 16 or 32).  The proof (src/proof/harness/api_reset/): x_inflate_reset's simulation of a reset
+   stream by a fresh one (inflate_reset/IRDefs.v) for calls of up to 2^32-1 bytes, from the specifications of
+   inflateInit2_, inflateReset and inflate() on the code with F8. *)
+Require Zlib.proof.harness.api_reset.ARLaw.
+Lemma short_api_reset : laws_common_ok -> harness_safe Zlib.contracts.api_reset.whole_prog.
+Proof.
+  exact Zlib.proof.harness.api_reset.ARLaw.api_reset_ok.
+Qed.
+
+(* rj_bad_dictionary: a stream of any length whose first clip(stream_len) bytes are offered to inflate(), and a
+   dictionary of up to 2^32-1 bytes.  The assembly RDLawAsm.rbd_core (src/proof/harness/rj_bad_dictionary/RD*.v:
+   main in five segments, the theory of the one inflate() call, which reads only the six header bytes) from
+   inflate.c's bodies for SpecW's clients (SpecWLibProof.specw_lib) and laws_common.h's helpers.  (rj_bad_block,
+   also unbounded now, is proved with rj_far_back in bit_writer/Laws.v, the body of its main in
+   BBMain.bb_body_main.) *)
+Require Zlib.proof.harness.rj_bad_dictionary.RDLawAsm.
+Require Zlib.proof.inflate_api.SpecWLibProof.
+Lemma short_rj_bad_dictionary : laws_common_ok -> harness_safe Zlib.contracts.rj_bad_dictionary.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.rj_bad_dictionary.RDLawAsm.rbd_core Zlib.proof.inflate_api.SpecWLibProof.specw_lib L).
+Qed.
+
+(* === short_rfc_stored: rfc_stored === *)
+(* rfc_stored: a raw, zlib or gzip stream of stored blocks of any sizes (any padding bits, any bytes after it) is
+   inflated to exactly its data, compared against a copy of the data made with copy_of before the inflate() calls.
+   The proof (src/proof/harness/rfc_stored/): main in segments (RSMain*.v), the theory of the inflate loop
+   (RSTheory.v, from the decode theory Decode7a.decode7a) and the assembly RSLawAsm.rs_core; Law.rfc_stored_ok. *)
+Require Zlib.proof.harness.rfc_stored.Law.
+Lemma short_rfc_stored : laws_common_ok -> harness_safe Zlib.contracts.rfc_stored.whole_prog.
+Proof.
+  exact Zlib.proof.harness.rfc_stored.Law.rfc_stored_ok.
+Qed.
+(* === end short_rfc_stored === *)
+
+Lemma suite_short_inflate : laws_common_ok ->
+  harness_safe Zlib.contracts.rj_inflate_params.whole_prog /\
+  harness_safe Zlib.contracts.rj_any_input.whole_prog /\
+  harness_safe Zlib.contracts.api_counters.whole_prog /\
+  harness_safe Zlib.contracts.api_untouched_output.whole_prog /\
+  harness_safe Zlib.contracts.api_split_invariant.whole_prog /\
+  harness_safe Zlib.contracts.rj_bad_header.whole_prog /\
+  harness_safe Zlib.contracts.rj_bad_block.whole_prog /\
+  harness_safe Zlib.contracts.rj_far_back.whole_prog /\
+  harness_safe Zlib.contracts.rj_bad_dictionary.whole_prog /\
+  harness_safe Zlib.contracts.rfc_stored.whole_prog /\
+  harness_safe Zlib.contracts.api_reset.whole_prog.
+Proof.
+  intro L.
+  destruct (short_inflate_pieces L) as (Rai & Acnt & Aunt).
+  destruct (short_bit_writer L) as (Rbb & Rfb).
+  pose proof (Zlib.proof.harness.rj_inflate_params.Law.rj_inflate_params_ok L).
+  pose proof (short_api_split_invariant L).
+  pose proof (short_rj_bad_header L).
+  pose proof (short_rj_bad_dictionary L).
+  pose proof (short_rfc_stored L).
+  pose proof (short_api_reset L).
+  repeat (split; [assumption | ]); assumption.
+Qed.
+
+(* === end suite_short_inflate === *)
+
+(* === suite_short_alloc: the memory laws: deflate and inflate with the harness's counting zalloc/zfree === *)
+
+Require Zlib.proof.harness.counted.Bodies.
+Require Zlib.proof.za.deflate.Bodies.
+Require Zlib.proof.za.deflate.Api.
+Require Zlib.proof.za.deflate.Model.
+Require Zlib.proof.deflate.AnyCallsProof.
+Require Zlib.proof.harness.res_free_deflate.Law.
+Require Zlib.proof.harness.res_memory_deflate.Law.
+Require Zlib.proof.harness.laws_session.Bodies.
+Require Zlib.proof.harness.res_inflate.Laws.
+
+(* The four memory laws: deflate.c and inflate.c with the harness's counting allocator (src/proof/harness/counted/,
+   whose failed flag records a zalloc that returned Z_NULL: the event ZFail of src/proof/zutil/ZAlloc.v), from the
+   bodies of the allocator-generic ports (src/proof/za/), the model of any number of deflate() calls
+   (src/proof/deflate/AnyCalls.v) and the laws' mains (res_free_deflate/, res_memory_deflate/, res_inflate/). *)
+Lemma short_memory_laws : laws_common_ok ->
+  harness_safe Zlib.contracts.res_free_deflate.whole_prog /\
+  harness_safe Zlib.contracts.res_free_inflate.whole_prog /\
+  harness_safe Zlib.contracts.res_memory_deflate.whole_prog /\
+  harness_safe Zlib.contracts.res_memory_inflate.whole_prog.
+Proof.
+  intros L.
+  pose proof Zlib.proof.harness.counted.Bodies.counted_bodies as C.
+  pose proof Zlib.proof.za.deflate.Bodies.za_deflate_bodies as B.
+  pose proof Zlib.proof.za.deflate.Model.za_deflate_model as M.
+  destruct Zlib.proof.za.deflate.Api.za_deflate_api as [A E].
+  pose proof (Zlib.proof.harness.res_free_deflate.Law.res_free_deflate_ok L C B A E M) as Fd.
+  pose proof (Zlib.proof.harness.res_memory_deflate.Law.res_memory_deflate_ok L
+                Zlib.proof.harness.laws_session.Bodies.laws_session_bodies C B A E
+                Zlib.proof.deflate.AnyCallsProof.any_calls_thm) as Md.
+  destruct (Zlib.proof.harness.res_inflate.Laws.res_inflate_ok L C) as [Fi Mi].
+  exact (conj Fd (conj Fi (conj Md Mi))).
+Qed.
+
+Lemma short_res_free_deflate : laws_common_ok -> harness_safe Zlib.contracts.res_free_deflate.whole_prog.
+Proof. intro L. exact (proj1 (short_memory_laws L)). Qed.
+
+Lemma short_res_free_inflate : laws_common_ok -> harness_safe Zlib.contracts.res_free_inflate.whole_prog.
+Proof. intro L. exact (proj1 (proj2 (short_memory_laws L))). Qed.
+
+Lemma short_res_memory_deflate : laws_common_ok -> harness_safe Zlib.contracts.res_memory_deflate.whole_prog.
+Proof.
+  intro L.
+  destruct Zlib.proof.za.deflate.Api.za_deflate_api as [A E].
+  exact (Zlib.proof.harness.res_memory_deflate.Law.res_memory_deflate_ok L
+           Zlib.proof.harness.laws_session.Bodies.laws_session_bodies
+           Zlib.proof.harness.counted.Bodies.counted_bodies Zlib.proof.za.deflate.Bodies.za_deflate_bodies A E
+           Zlib.proof.deflate.AnyCallsProof.any_calls_thm).
+Qed.
+
+Lemma short_res_memory_inflate : laws_common_ok -> harness_safe Zlib.contracts.res_memory_inflate.whole_prog.
+Proof. intro L. exact (proj2 (proj2 (proj2 (short_memory_laws L)))). Qed.
+
+Lemma suite_short_alloc : laws_common_ok ->
+  harness_safe Zlib.contracts.res_free_deflate.whole_prog /\
+  harness_safe Zlib.contracts.res_free_inflate.whole_prog /\
+  harness_safe Zlib.contracts.res_memory_deflate.whole_prog /\
+  harness_safe Zlib.contracts.res_memory_inflate.whole_prog.
+Proof.
+  intro L.
+  exact (conj (short_res_free_deflate L) (conj (short_res_free_inflate L)
+    (conj (short_res_memory_deflate L) (short_res_memory_inflate L)))).
+Qed.
+
+(* === end suite_short_alloc === *)
+
+(* === suite_short_roundtrip: the laws that run deflate (or compress) and then inflate (or uncompress) on its output === *)
+
+(* Four laws (rt_partial, rj_truncated, rj_bad_checksum, rfc_trailing_bytes) are proved in clip_streams from facts
+   about zlib's functions that the other areas prove: inflate.c's bodies for SpecW's wide specification
+   (SpecWLibProof), the deflate side of the round trips without size limits (RTK7Proof.rt_kfacts7), the wide decode
+   theory (Decode7, Decode7a) and short_bound_w_big for the clip() loops.  The other six are proved
+   below on the same layers. *)
+Require Zlib.proof.harness.clip_streams.Laws.
+Require Zlib.proof.roundtrip.RTK7Proof Zlib.proof.wide.Decode7 Zlib.proof.rfc1951.Decode7Step.
+Require Zlib.proof.deflate.DetWide Zlib.proof.deflate.LawFactsW Zlib.proof.deflate.LawFactsW2.
+Require Zlib.proof.deflate.LTWClip Zlib.proof.deflate.LTWClipCore.
+Require Zlib.proof.inflate_api.SpecWLibProof Zlib.proof.wide.Decode7a.
+Require Zlib.proof.deflate.DetCoreWide Zlib.proof.deflate.DetHdrWide Zlib.proof.deflate.DetApiWide.
+
+(* The deflateBound accounting of the clip() loops (rt_partial, rj_truncated, rj_bad_checksum,
+   rfc_trailing_bytes): LTWClip.bound_w_big_thm over the wide core for LTCore's invariant W3 with its level-0
+   clip facts (LTWClipCore), the wide header stages and lemma (ii). *)
+Lemma short_bound_w_big : Zlib.proof.deflate.LawFactsW2.bound_w_big_stmt.
+Proof.
+  destruct Zlib.proof.huffman.Lemmas.huffman_lemmas as [Hi Hii].
+  pose proof (Zlib.proof.deflate.LTWCore.core_facts_w3 Hi) as CF.
+  exact (Zlib.proof.deflate.LTWClip.bound_w_big_thm Hii
+           (conj CF (Zlib.proof.deflate.LTWClipCore.core_clip_facts CF)) Zlib.proof.deflate.LTWHdr.hdr_theory_w).
+Qed.
+
+(* rt_partial, rj_truncated and rj_bad_checksum (src/proof/harness/clip_streams/, assembled together in
+   Laws.clip_stream_laws; rt_partial's main keeps the copy made with copy_of as a frame of its deflate half and
+   compares the output with it, RPKit.v / RPDKit.v, and is assembled in AsmRP.v). *)
+Lemma short_clip_streams : laws_common_ok ->
+  harness_safe Zlib.contracts.rt_partial.whole_prog /\
+  harness_safe Zlib.contracts.rj_truncated.whole_prog /\
+  harness_safe Zlib.contracts.rj_bad_checksum.whole_prog.
+Proof.
+  intro L.
+  destruct Zlib.proof.wide.Decode7.decode7 as [DI DC].
+  exact (Zlib.proof.harness.clip_streams.Laws.clip_stream_laws L Zlib.proof.roundtrip.RTK7Proof.rt_kfacts7
+           DI DC Zlib.proof.wide.Decode7a.decode7a Zlib.proof.inflate_api.SpecWLibProof.specw_lib
+           short_bound_w_big).
+Qed.
+
+(* Six round-trip laws whose harnesses take data of any length, fed to zlib in pieces of at most 2^32-1 bytes
+   where one call takes no more (compress2 and uncompress2 do that themselves); rt_dictionary and api_dict_id also
+   take a dictionary of up to 2^32-1 bytes, rt_gzip_header a name and a comment of up to 2^32-2. *)
+(* rt_roundtrip: compress2 into compressBound bytes, then uncompress2 of its output followed by any bytes, into as
+   many bytes as the data has, for data of any length (Z_OK, exactly the stream read, the data equal to a copy made
+   before compress2).  The assembly (harness/rt_roundtrip/WLawAsm.v) of main's body (WMain.v) and the shared bodies:
+   inflate.c (Body5_init, Body5_reset, BodySmall, SpecWLibProof, BodyWSelf: inflate() for any uInt sizes), uncompr.c for any sizes
+   (UBodiesW), trees.c and deflate.c (suite_trees_bodies, suite_deflate_bodies9); the model facts: compress2's run
+   exists and returns Z_OK or Z_MEM_ERROR (short_c2w_bound), its Z_OK output is the zlib stream of the data
+   (RTC2WFinalProof.c2w_final from the deflate side without size limits and compress2_z's loop facts
+   LTWC2Thm.c2_facts_thm), and uncompress2 of that stream followed by any bytes gives the data back and reads
+   exactly the stream (UTheoryWProof.uw_theory). *)
+Require Zlib.proof.harness.rt_roundtrip.WLawAsm.
+Require Zlib.proof.harness.rt_roundtrip.WMain.
+Require Zlib.proof.inflate_api.BodyWSelf.
+Require Zlib.proof.uncompr.UBodiesW.
+Require Zlib.proof.uncompr.UTheoryWProof.
+Require Zlib.proof.roundtrip.RTC2WFinalProof.
+Require Zlib.proof.deflate.LTWC2Thm.
+Require Zlib.proof.roundtrip.RTK7Proof.
+Require Zlib.proof.inflate_api.Body5_init.
+Require Zlib.proof.inflate_api.Body5_reset.
+Require Zlib.proof.inflate.BodySmall.
+Require Zlib.proof.inflate_api.SpecWLibProof.
+
+Lemma short_rt_roundtrip : laws_common_ok -> harness_safe Zlib.contracts.rt_roundtrip.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.rt_roundtrip.WLawAsm.rt_roundtrip_w_core L
+           (conj Zlib.proof.inflate_api.Body5_init.api5_init (conj Zlib.proof.inflate_api.Body5_reset.api5_reset
+              (fun Espec => @Zlib.proof.inflate.BodySmall.body_inflate_fixed Espec)))
+           Zlib.proof.inflate_api.SpecWLibProof.specw_lib
+           suite_trees_bodies suite_deflate_bodies9
+           Zlib.proof.harness.rt_roundtrip.WMain.body_main_w Zlib.proof.inflate_api.BodyWSelf.body_inflate_ws
+           Zlib.proof.uncompr.UBodiesW.uncompr_bodies_w short_c2w_bound
+           (Zlib.proof.roundtrip.RTC2WFinalProof.c2w_final Zlib.proof.roundtrip.RTK7Proof.rt_kfacts7
+              Zlib.proof.deflate.LTWC2Thm.c2_facts_thm)
+           Zlib.proof.uncompr.UTheoryWProof.uw_theory).
+Qed.
+
+(* api_short_output: compress2 into compressBound bytes, then uncompress2 into less space than the data needs, for
+   data of any length: Z_BUF_ERROR with the space filled with the start of the data.  The assembly
+   (harness/api_short_output/WLawAsm.v) of main's body (WMain.v) and the shared bodies: inflate.c (the bodies of
+   inflateInit_, the resets and inflate_fixed that the program reaches, SpecWLibProof, BodyWSelf: inflate() for
+   any uInt sizes, its output possibly the stream's own member when the destination is Z_NULL), uncompr.c for any sizes (UBodiesW), trees.c and deflate.c (suite_trees_bodies,
+   suite_deflate_bodies9); the model facts: compress2's run exists and returns Z_OK or Z_MEM_ERROR
+   (short_c2w_bound), its Z_OK output is the zlib stream of the data (RTC2WFinalProof.c2w_final from the deflate
+   side without size limits and compress2_z's loop facts LTWC2Thm.c2_facts_thm), and uncompress2 of that stream
+   followed by any bytes into less space stops with Z_BUF_ERROR, the space filled and fewer bytes read than the
+   stream has (UTheoryWProof.uw_theory). *)
+Require Zlib.proof.harness.api_short_output.WLawAsm.
+Require Zlib.proof.harness.api_short_output.WMain.
+Require Zlib.proof.inflate_api.BodyWSelf.
+Require Zlib.proof.uncompr.UBodiesW.
+Require Zlib.proof.uncompr.UTheoryWProof.
+Require Zlib.proof.roundtrip.RTC2WFinalProof.
+Require Zlib.proof.deflate.LTWC2Thm.
+Require Zlib.proof.roundtrip.RTK7Proof.
+Require Zlib.proof.inflate_api.Body5_init.
+Require Zlib.proof.inflate_api.Body5_reset.
+Require Zlib.proof.inflate.BodySmall.
+Require Zlib.proof.inflate_api.SpecWLibProof.
+
+Lemma short_api_short_output : laws_common_ok -> harness_safe Zlib.contracts.api_short_output.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.api_short_output.WLawAsm.api_short_output_w_core L
+           (conj Zlib.proof.inflate_api.Body5_init.api5_init (conj Zlib.proof.inflate_api.Body5_reset.api5_reset
+              (fun E => @Zlib.proof.inflate.BodySmall.body_inflate_fixed E)))
+           Zlib.proof.inflate_api.SpecWLibProof.specw_lib
+           suite_trees_bodies suite_deflate_bodies9
+           Zlib.proof.harness.api_short_output.WMain.body_main_w Zlib.proof.inflate_api.BodyWSelf.body_inflate_ws
+           Zlib.proof.uncompr.UBodiesW.uncompr_bodies_w short_c2w_bound
+           (Zlib.proof.roundtrip.RTC2WFinalProof.c2w_final Zlib.proof.roundtrip.RTK7Proof.rt_kfacts7
+              Zlib.proof.deflate.LTWC2Thm.c2_facts_thm)
+           Zlib.proof.uncompr.UTheoryWProof.uw_theory).
+Qed.
+
+(* === short_rt_stream: rt_stream with data of any length (src/proof/harness/rt_stream/ULaw.v and the files it
+   names: main's body in five parts, the deflate side over RTK7Api, the inflate side over the wide decode theory) === *)
+Require Zlib.proof.harness.rt_stream.ULaw.
+
+Lemma short_rt_stream : laws_common_ok -> harness_safe Zlib.contracts.rt_stream.whole_prog.
+Proof.
+  exact Zlib.proof.harness.rt_stream.ULaw.urt_stream_law.
+Qed.
+
+(* === end short_rt_stream === *)
+
+(* === short_rt_dictionary, short_api_dict_id: src/proof/harness/dictionary_w/ === *)
+(* rt_dictionary and api_dict_id (a dictionary of up to 2^32 - 1 bytes, data of any length compressed in clip()
+   pieces; api_dict_id's first inflate() call asks for the dictionary, rt_dictionary then inflates the rest in
+   clip() pieces with Z_FINISH; both compare against copies made with copy_of before the calls):
+   DWLaws.dictionary_w_laws, on the deflate side of the round trips (RTK7Proof.rt_kfacts7), the wide decode theory
+   (Decode7), inflate.c's bodies for SpecW (SpecWLibProof.specw_lib) and the wide deflateBound accounting. *)
+Require Zlib.proof.roundtrip.RTK7Proof.
+Require Zlib.proof.wide.Decode7.
+Require Zlib.proof.inflate_api.SpecWLibProof.
+Require Zlib.proof.harness.dictionary_w.DWLaws.
+
+Lemma short_dictionary_w : laws_common_ok ->
+  harness_safe Zlib.contracts.rt_dictionary.whole_prog /\
+  harness_safe Zlib.contracts.api_dict_id.whole_prog.
+Proof.
+  intro L.
+  destruct Zlib.proof.wide.Decode7.decode7 as [DI DC].
+  exact (Zlib.proof.harness.dictionary_w.DWLaws.dictionary_w_laws L Zlib.proof.roundtrip.RTK7Proof.rt_kfacts7
+           DI DC Zlib.proof.inflate_api.SpecWLibProof.specw_lib short_bound_w_big).
+Qed.
+
+Lemma short_rt_dictionary : laws_common_ok -> harness_safe Zlib.contracts.rt_dictionary.whole_prog.
+Proof. intro L. exact (proj1 (short_dictionary_w L)). Qed.
+
+Lemma short_api_dict_id : laws_common_ok -> harness_safe Zlib.contracts.api_dict_id.whole_prog.
+Proof. intro L. exact (proj2 (short_dictionary_w L)). Qed.
+(* === end short_rt_dictionary, short_api_dict_id === *)
+
+(* === short_rt_gzip_header: rt_gzip_header for names and comments of up to 2^32-2 bytes === *)
+(* The law is G2Law.rt_gzip_header2_law (src/proof/harness/rt_gzip_header/G2*.v: main, the deflate and inflate
+   theories of the clip() loops, the assembly; inflate's body against the header specification RTH9Spec.inflate_spec9
+   in src/proof/roundtrip/RTH9*.v) with the body of deflate() offered no input object (DSpecNBody.deflate_bodyN). *)
+
+(* Round 3: main compares the header got back with copies of extra, name and comment made with copy_of before
+   compression and with the scalar header fields kept in locals; main's proof (G2MainKit.v and the segments
+   G2MainSeg1.v .. G2MainSeg7.v) follows the new statements, the theories and the assembly are round 2's. *)
+Require Zlib.proof.harness.rt_gzip_header.G2Law.
+Require Zlib.proof.deflate.DSpecNBody.
+Lemma short_rt_gzip_header : laws_common_ok -> harness_safe Zlib.contracts.rt_gzip_header.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.rt_gzip_header.G2Law.rt_gzip_header2_law L Zlib.proof.deflate.DSpecNBody.deflate_bodyN).
+Qed.
+
+(* === end short_rt_gzip_header === *)
+
+(* rfc_trailing_bytes (harness/rfc_trailing_bytes.c): the stream followed by any bytes, inflated in clip() pieces
+   with any flush, returns only Z_OK, Z_BUF_ERROR or Z_STREAM_END and stops exactly at the stream's end:
+   TrailingBytes.rfc_trailing_bytes_law (src/proof/harness/clip_streams/TB*.v), on the deflate side of the round
+   trips (RTK7Proof.rt_kfacts7), the wide decode theory (Decode7, Decode7a), inflate.c's bodies for SpecW
+   (SpecWLibProof.specw_lib) and the wide deflateBound accounting. *)
+Require Zlib.proof.roundtrip.RTK7Proof.
+Require Zlib.proof.wide.Decode7.
+Require Zlib.proof.wide.Decode7a.
+Require Zlib.proof.inflate_api.SpecWLibProof.
+Require Zlib.proof.harness.clip_streams.TrailingBytes.
+
+Lemma short_rfc_trailing_bytes : laws_common_ok -> harness_safe Zlib.contracts.rfc_trailing_bytes.whole_prog.
+Proof.
+  intro L.
+  destruct Zlib.proof.wide.Decode7.decode7 as [DI DC].
+  exact (Zlib.proof.harness.clip_streams.TrailingBytes.rfc_trailing_bytes_law L Zlib.proof.roundtrip.RTK7Proof.rt_kfacts7
+           DI DC Zlib.proof.wide.Decode7a.decode7a Zlib.proof.inflate_api.SpecWLibProof.specw_lib short_bound_w_big).
+Qed.
+
+Lemma suite_short_roundtrip : laws_common_ok ->
+  harness_safe Zlib.contracts.rt_roundtrip.whole_prog /\
+  harness_safe Zlib.contracts.api_short_output.whole_prog /\
+  harness_safe Zlib.contracts.rt_stream.whole_prog /\
+  harness_safe Zlib.contracts.rt_dictionary.whole_prog /\
+  harness_safe Zlib.contracts.api_dict_id.whole_prog /\
+  harness_safe Zlib.contracts.rt_gzip_header.whole_prog /\
+  harness_safe Zlib.contracts.rt_partial.whole_prog /\
+  harness_safe Zlib.contracts.rj_truncated.whole_prog /\
+  harness_safe Zlib.contracts.rj_bad_checksum.whole_prog /\
+  harness_safe Zlib.contracts.rfc_trailing_bytes.whole_prog.
+Proof.
+  intro L.
+  pose proof Zlib.proof.roundtrip.RTK7Proof.rt_kfacts7 as K.
+  destruct Zlib.proof.wide.Decode7.decode7 as [DI DC].
+  pose proof Zlib.proof.inflate_api.SpecWLibProof.specw_lib as W.
+  pose proof Zlib.proof.wide.Decode7a.decode7a as D7a.
+  destruct (short_clip_streams L) as (Tpa & Rtr & Rbc).
+  pose proof (short_rfc_trailing_bytes L) as Tb.
+  exact (conj (short_rt_roundtrip L) (conj (short_api_short_output L) (conj (short_rt_stream L)
+    (conj (short_rt_dictionary L) (conj (short_api_dict_id L) (conj (short_rt_gzip_header L)
+    (conj Tpa (conj Rtr (conj Rbc Tb))))))))).
+Qed.
+
+(* === end suite_short_roundtrip === *)
+
+(* === round 3: the three new laws === *)
+
+(* === short_api_deflate_any: one stream, any parameters, flushes and deflateParams calls === *)
+
+(* api_deflate_any (harness/api_deflate_any.c): for any parameters deflateInit2 accepts and data of any length,
+   fed to any number of deflate() calls in pieces below 2^32 bytes, each with any output space and any flush
+   (Z_FINISH and the leftover input after the first Z_FINISH), with or without deflateParams before each call
+   (before the first Z_FINISH): deflateParams returns Z_STREAM_ERROR exactly for an invalid level or strategy,
+   deflate() returns Z_STREAM_ERROR exactly for an invalid flush, Z_STREAM_END only with Z_FINISH, and leaves the
+   unwritten output space as it was; round 4: the parameters in zlib.h's ranges (deflate_params_ok), deflateInit2
+   returns Z_OK unless Z_MEM_ERROR, and a call with no output space and a valid flush returns Z_BUF_ERROR and moves
+   nothing (position_of / unmoved, AnyCodes.deflate_no_room).  The body of main (AnyMain.body_main, at the law's
+   compspecs, from the parts of AnyKit.v) and the model facts (AnyTheory.any_theory: law api_deterministic's
+   invariant DetTheory2.det_J2 and the return codes of AnyCodes.v) give the law (AnyLaw.law_of_main); the model facts rest on deflate() on Iapi7
+   (RTK7Api.rtk7_api_deflate, its compression stage RTK7Nocut.comp_nocut7), as for api_deterministic. *)
+Require Zlib.proof.roundtrip.RTK7Api.
+Require Zlib.proof.roundtrip.RTK7Nocut.
+Require Zlib.proof.harness.api_deflate_any.AnyTheory.
+Require Zlib.proof.harness.api_deflate_any.AnyMain.
+Require Zlib.proof.harness.api_deflate_any.AnyLaw.
+
+Lemma short_api_deflate_any : laws_common_ok -> harness_safe Zlib.contracts.api_deflate_any.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.api_deflate_any.AnyLaw.law_of_main
+    Zlib.proof.harness.api_deflate_any.AnyMain.body_main
+    (Zlib.proof.harness.api_deflate_any.AnyTheory.any_theory
+       (Zlib.proof.roundtrip.RTK7Api.rtk7_api_deflate Zlib.proof.roundtrip.RTK7Nocut.comp_nocut7))
+    suite_trees_bodies suite_deflate_bodies9 L).
+Qed.
+
+(* === end short_api_deflate_any === *)
+
+(* api_inflate_deterministic (harness/api_inflate_deterministic.c): two streams made by inflateInit2 with the
+   same windowBits, fed the same input of any length in the same pieces with the same output space and flush on
+   each call, return the same codes and leave the same counters, output, msg, data_type and (but for raw streams)
+   adler.  src/proof/harness/api_inflate_deterministic/AID*.v: the theory (AIDTheory.v: api_reset's relation of
+   two streams, which two new streams satisfy and every pair of equal calls keeps), main in three segments, the
+   assembly from inflate.c's bodies for SpecW's clients and laws_common.h's helpers. *)
+Require Zlib.proof.harness.api_inflate_deterministic.AIDLaw.
+Lemma short_api_inflate_deterministic : laws_common_ok ->
+  harness_safe Zlib.contracts.api_inflate_deterministic.whole_prog.
+Proof.
+  exact Zlib.proof.harness.api_inflate_deterministic.AIDLaw.api_inflate_deterministic_ok.
+Qed.
+
+(* rj_uncompress_any (harness/rj_uncompress_any.c): uncompress2 of any input of any length into an output space of
+   any size returns Z_OK, Z_MEM_ERROR, Z_BUF_ERROR or Z_DATA_ERROR, reports at most the output size written and at
+   most the input length read, and leaves the rest of the output space as it was.  The assembly
+   (harness/rj_uncompress_any/RULawAsm.v) of main's body (RUMain.v) and the shared bodies: uncompr.c for any sizes
+   with a destination and a source that may be Z_NULL (UBodiesW: alloc_any_bytes(0) may return NULL), inflate.c
+   as for rt_roundtrip (Body5_init, Body5_reset, BodySmall, SpecWLibProof, BodyWSelf), copy_of with a Z_NULL source
+   of length 0 (CopyOfNullBody); the theory: uncompress2's loop on any input (UTheoryWAny.uw_any). *)
+Require Zlib.proof.harness.rj_uncompress_any.RULawAsm.
+Require Zlib.proof.harness.rj_uncompress_any.RUMain.
+Require Zlib.proof.harness.laws_common.CopyOfNullBody.
+Require Zlib.proof.uncompr.UBodiesW.
+Require Zlib.proof.uncompr.UTheoryWAny.
+Lemma short_rj_uncompress_any : laws_common_ok -> harness_safe Zlib.contracts.rj_uncompress_any.whole_prog.
+Proof.
+  intro L.
+  exact (Zlib.proof.harness.rj_uncompress_any.RULawAsm.rj_uncompress_any_core L
+           Zlib.proof.harness.laws_common.CopyOfNullBody.copy_of_n_body
+           (conj Zlib.proof.inflate_api.Body5_init.api5_init (conj Zlib.proof.inflate_api.Body5_reset.api5_reset
+              (fun Espec => @Zlib.proof.inflate.BodySmall.body_inflate_fixed Espec)))
+           Zlib.proof.inflate_api.SpecWLibProof.specw_lib
+           Zlib.proof.harness.rj_uncompress_any.RUMain.body_main
+           Zlib.proof.inflate_api.BodyWSelf.body_inflate_ws
+           Zlib.proof.uncompr.UBodiesW.uncompr_bodies_w
+           Zlib.proof.uncompr.UTheoryWAny.uw_any).
+Qed.
+
+(* === end round 3: the three new laws === *)
+
+(* === round 4: the three new laws === *)
+
+(* === short_api_inflate_any: api_inflate_any (src/proof/harness/api_inflate_any/: the loop of
+   api_untouched_output, inflate_pieces/, with rj_any_input's code check and counted) === *)
+Require Zlib.proof.harness.api_inflate_any.Law.
+
+(* api_inflate_any (harness/api_inflate_any.c): for any windowBits zlib.h allows (inflateInit2 returns Z_OK), any
+   input of any length fed to any number of inflate() calls in pieces below 2^32 bytes, each with any output space
+   and any flush, inflateSetDictionary between calls or not: every call returns a documented code, accounts its
+   progress exactly (next_in/avail_in, next_out/avail_out, total_in/total_out move together), leaves its input and
+   the unwritten output space as they were, and with no input and no output space does not return Z_OK. *)
+Lemma short_api_inflate_any : laws_common_ok -> harness_safe Zlib.contracts.api_inflate_any.whole_prog.
+Proof.
+  intro L. exact (Zlib.proof.harness.api_inflate_any.Law.api_inflate_any_ok L).
+Qed.
+(* === end short_api_inflate_any === *)
+
+(* rt_stream_trailing (harness/rt_stream_trailing.c): as rt_stream, with any bytes after the compressed stream:
+   inflate() in any pieces returns Z_STREAM_END with next_in exactly at the stream's end, the accounting of every
+   call exact, and the data back.  The proof (src/proof/harness/rt_stream_trailing/) reuses rt_stream's: its
+   deflate side and kits, its compspecs, and the decode theory on the stream followed by any bytes. *)
+Require Zlib.proof.harness.rt_stream_trailing.TLaw.
+Lemma short_rt_stream_trailing : laws_common_ok -> harness_safe Zlib.contracts.rt_stream_trailing.whole_prog.
+Proof.
+  exact Zlib.proof.harness.rt_stream_trailing.TLaw.rt_stream_trailing_law.
+Qed.
+
+(* rt_session (harness/rt_session.c): one session of deflate and inflate with valid parameters, an optional
+   dictionary (zlib: Z_NEED_DICT in the pieces loop; raw: inflateSetDictionary right after init), gzip header
+   fields, any pieces and any trailing bytes: Z_OK/Z_STREAM_END codes, exact accounting, the header and the data
+   back.  The proof: src/proof/harness/rt_session/ (SLaw.ses_law). *)
+Require Zlib.proof.harness.rt_session.SLaw.
+Lemma short_rt_session : laws_common_ok -> harness_safe Zlib.contracts.rt_session.whole_prog.
+Proof.
+  exact Zlib.proof.harness.rt_session.SLaw.ses_law.
+Qed.
+
+(* === end round 4: the three new laws === *)
+
 Theorem suite :
   harness_safe Zlib.contracts.api_counters.whole_prog /\
   harness_safe Zlib.contracts.api_deflate_any.whole_prog /\
@@ -136,4 +1136,18 @@ Theorem suite :
   harness_safe Zlib.contracts.x_inflate_reset.whole_prog /\
   harness_safe Zlib.contracts.x_uncompress_any.whole_prog.
 Proof.
-Admitted.
+  pose proof Zlib.proof.harness.laws_common.Bodies.laws_common_bodies as L.
+  destruct (suite_short_checksums L) as (Ca & Cac & Can & Cc & Ccc & Ccn & Rcn).
+  destruct (suite_short_deflate L) as (Rbl & Rdp & Rcb & Rb & L0s & L0b & Adet).
+  destruct (suite_short_inflate L) as (Rip & Rai & Acnt & Aunt & Asplit & Rbh & Rbb & Rfb & Rbd & Fst & Ares).
+  destruct (suite_short_alloc L) as (Fd & Fi & Md & Mi).
+  destruct (suite_short_roundtrip L) as (Trt & Aso & Tst & Tdi & Adi & Tgz & Tpa & Rtr & Rbc & Ftb).
+  pose proof (short_api_deflate_any L) as Nda.
+  pose proof (short_api_inflate_deterministic L) as Nid.
+  pose proof (short_rj_uncompress_any L) as Nua.
+  pose proof (short_api_inflate_any L) as Nia.
+  pose proof (short_rt_stream_trailing L) as Nst.
+  pose proof (short_rt_session L) as Nse.
+  destruct suite_x as (X1 & X2 & X3 & X4 & X5 & X6 & X7 & X8 & X9 & X10 & X11 & X12 & X13 & X14 & X15 & X16 & X17).
+  repeat (split; [assumption | ]); assumption.
+Qed.

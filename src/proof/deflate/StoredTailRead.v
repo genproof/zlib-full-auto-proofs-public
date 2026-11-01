@@ -1,0 +1,232 @@
+(** * deflate_stored, second phase, part 2 (StoredTailKit.S_p2_read): [if (have > avail_in) have = avail_in;
+    if (have) { read_buf(s->strm, s->window + s->strstart, have); s->strstart += have; s->insert += ...; }],
+    against StoredTailKit.ds_read. *)
+Require Import VST.floyd.proofauto.
+Require Import Zlib.proof.deflate.DCS.
+Require Import Zlib.proof.deflate.Arith.
+Require Import Zlib.proof.trees.TLemmas.
+Require Import Zlib.proof.deflate.StoredTailKit.
+
+#[export] Existing Instance DCS.CS.
+
+Open Scope cmodel_scope.
+
+Require Zlib.proof.adler32.Model Zlib.proof.crc32.Combine Zlib.trees.code Zlib.proof.crc32.Spec.
+
+(** The model facts of a read (as FWRead.c_read_buf_facts, with the length). *)
+Lemma st_read_buf_facts s z size z' data :
+  strm_ranges z -> 0 <= size <= z_avail_in z -> c_read_buf s z size = Some (z', data) ->
+  strm_ranges z' /\ z_msg z' = z_msg z /\ z_in z' = z_in z /\
+  Forall (fun x => 0 <= x < 256) data /\ Zlength data = size.
+Proof.
+  intros Hr Hs H. unfold c_read_buf in H.
+  pose proof Hr as (R1 & R2 & R3 & R4 & R5 & R6 & R7 & R8 & R9 & R10 & R11 & R12).
+  set (len := if z_avail_in z >? size then size else z_avail_in z) in H.
+  assert (Hlen : len = size).
+  { unfold len. destruct (Z.gtb_spec (z_avail_in z) size); lia. }
+  destruct (len =? 0) eqn:E0.
+  { inversion H; subst z' data. apply Z.eqb_eq in E0. split; [exact Hr|]. repeat split; auto; rewrite ?Zlength_nil; lia. }
+  unfold rds in H. cbn [z_in z_next_in set_z_avail_in] in H.
+  rewrite (proj2 (andb_true_iff _ _)) in H.
+  2: { split; [apply andb_true_iff; split|]; apply Z.leb_le; lia. }
+  cbn [bind] in H.
+  set (d := sublist (z_next_in z) (z_next_in z + len) (z_in z)) in H.
+  assert (Hd : Forall (fun x => 0 <= x < 256) d).
+  { unfold d. apply Forall_sublist. auto. }
+  assert (Hdb : Zlib.proof.adler32.Bytes.is_bytes d).
+  { unfold Zlib.proof.adler32.Bytes.is_bytes. eapply Forall_impl; [|exact Hd]. intros x Hx; cbn; rep_lia. }
+  assert (Hdl : Zlength d = len) by (unfold d; rewrite Zlength_sublist; lia).
+  match type of H with Some (?zz, _) = _ => set (zr := zz) in H end.
+  assert (Ha : u64_ok (z_adler zr)).
+  { unfold zr. destruct (d_wrap s =? 1); cbn.
+    - pose proof (Zlib.proof.adler32.Model.adler32_z_val_range (z_adler z) d Hdb).
+      unfold u64_ok. rep_lia.
+    - destruct (d_wrap s =? 2); cbn; [|exact R10].
+      pose proof (Zlib.proof.crc32.Combine.ref_crc32_range (z_adler z) d Hdb).
+      unfold Zlib.proof.crc32.GF2.is32 in H0. unfold u64_ok. rep_lia. }
+  assert (Hrest : z_in zr = z_in z /\ z_next_in zr = z_next_in z + len /\ z_avail_in zr = z_avail_in z - len /\
+    z_total_in zr = u64 (z_total_in z + len) /\ z_out zr = z_out z /\ z_avail_out zr = z_avail_out z /\
+    z_total_out zr = z_total_out z /\ z_msg zr = z_msg z).
+  { unfold zr. destruct (d_wrap s =? 1); [|destruct (d_wrap s =? 2)]; cbn; repeat split; reflexivity. }
+  inversion H; subst z' data. clear H.
+  destruct Hrest as (E1 & E2 & E3 & E4 & E5 & E6 & E7 & E8).
+  unfold strm_ranges. rewrite E1, E2, E3, E4, E5, E6, E7, E8.
+  assert (0 <= u64 (z_total_in z + len) <= Int64.max_unsigned).
+  { unfold u64. pose proof (Z.mod_pos_bound (z_total_in z + len) 18446744073709551616 ltac:(lia)). rep_lia. }
+  unfold u32_ok, u64_ok in *. repeat split; auto; lia.
+Qed.
+
+Lemma st_u32_range x : 0 <= u32 x <= Int.max_unsigned.
+Proof. unfold u32. pose proof (Z.mod_pos_bound x 4294967296 ltac:(lia)). rep_lia. Qed.
+
+Lemma st_dstate_ranges_read s win x h :
+  dstate_ranges s -> mb_ok win -> Zlength (mb_val win) = Zlength (mb_val (d_window s)) ->
+  dstate_ranges (add_insert (set_d_strstart (set_d_window s win) (u32 x)) h).
+Proof.
+  intros H Hm Hl. assert (u32_ok (u32 x)) by apply st_u32_range. unfold add_insert.
+  match goal with |- context [u32 (d_insert ?a + ?b)] => assert (u32_ok (u32 (d_insert a + b))) by apply st_u32_range end.
+  unfold dstate_ranges in *.
+  unfold set_d_insert, set_d_strstart, set_d_window in *;
+    cbn -[u32_ok u64_ok s32_ok mb_ok Int.max_unsigned Int64.max_unsigned Zlength u32] in *.
+  rewrite Hl. tauto.
+Qed.
+
+Lemma st_repr_u32 x : Int.repr (u32 x) = Int.repr x.
+Proof.
+  unfold u32. change 4294967296 with Int.modulus. rewrite <- Int.unsigned_repr_eq. apply Int.repr_unsigned.
+Qed.
+
+Lemma st_app3_sublists {A} {d : Inhabitant A} (a b c : list A) :
+  sublist 0 (Zlength a) (a ++ b ++ c) = a /\
+  sublist (Zlength a) (Zlength a + Zlength b) (a ++ b ++ c) = b /\
+  sublist (Zlength a + Zlength b) (Zlength a + Zlength b + Zlength c) (a ++ b ++ c) = c.
+Proof. split; [|split]; list_solve. Qed.
+
+(** deflate_globals without crc_table_at, kept folded. *)
+Definition st_dglobals_rest (gv : globals) : mpred :=
+  (trees_globals gv * errmsg_at gv *
+   @data_at DCS.CS Ers (tarray t_config 10) (config_vals gv) (gv _configuration_table) *
+   @data_at DCS.CS Ers (tarray tschar 6) (map vi [49; 46; 51; 46; 50; 0]) (gv _my_version))%logic.
+
+Lemma st_deflate_globals_split gv :
+  deflate_globals gv = (st_dglobals_rest gv * Zlib.proof.crc32.Spec.crc_table_at Ers gv)%logic.
+Proof. reflexivity. Qed.
+
+Lemma st_strm_in_fold z sp strmp pin msgv gv :
+  (@field_at DCS.CS Ews t_strm (DOT _next_in) (offset_val (z_next_in z) pin) strmp *
+   @field_at DCS.CS Ews t_strm (DOT _avail_in) (vi (z_avail_in z)) strmp *
+   @field_at DCS.CS Ews t_strm (DOT _total_in) (vl (z_total_in z)) strmp *
+   @field_at DCS.CS Ews t_strm (DOT _msg) msgv strmp *
+   @field_at DCS.CS Ews t_strm (DOT _state) sp strmp *
+   st_zfuncs strmp gv *
+   @field_at DCS.CS Ews t_strm (DOT _opaque) nullval strmp *
+   @field_at DCS.CS Ews t_strm (DOT _adler) (vl (z_adler z)) strmp *
+   @field_at_ DCS.CS Ews t_strm (DOT _reserved) strmp)%logic |-- strm_in_at z sp strmp pin msgv gv.
+Proof. rewrite st_strm_in_split. apply derives_refl. Qed.
+
+Lemma st_unsigned_repr_u32 x : Int.unsigned (Int.repr x) = u32 x.
+Proof. rewrite Int.unsigned_repr_eq. reflexivity. Qed.
+
+Lemma st_read_frag {Espec : OracleKind} (p : dptrs) (pin pout : val) (ish : share) (rest : list val)
+    (msgv : val) (gv : globals) (s : dstate) (z : strm) (flush h : Z) (s2 : dstate) (z2 : strm) :
+  0 <= h <= Int.max_unsigned ->
+  ds_read s z h = Some (s2, z2) ->
+  semax Delta_ds
+    (PROP () LOCAL (temp _have (vi h); temp _last (vi 0); gvars gv; temp _s (p_s p); temp _flush (vi flush))
+     SEP (dfull s z p pin pout ish rest msgv gv; deflate_globals gv))
+    S_p2_read
+    (normal_ret_assert
+      (PROP () LOCAL (temp _last (vi 0); gvars gv; temp _s (p_s p); temp _flush (vi flush))
+       SEP (dfull s2 z2 p pin pout ish rest msgv gv; deflate_globals gv))).
+Proof.
+  intros Hh Hm. show_tail_stmt.
+  unfold dfull. Intros.
+  unfold dstate_at at 1. rewrite st_trees_at_split. unfold dtype_at at 1. Intros.
+  rewrite strm_at_split, st_strm_in_split. Intros.
+  forward. forward.
+  pose proof (ds_read_out _ _ _ _ _ Hm) as Hout.
+  assert (Hai : 0 <= z_avail_in z <= Int.max_unsigned) by (unfold strm_ranges, u32_ok in H; lia).
+  set (h' := if h >? z_avail_in z then z_avail_in z else h).
+  assert (Hh' : 0 <= h' <= h /\ h' <= z_avail_in z)
+    by (unfold h'; destruct (Z.gtb_spec h (z_avail_in z)); lia).
+  match goal with |- semax _ (PROPx _ (LOCALx _ (SEPx ?R))) _ _ =>
+    forward_if (PROP () LOCAL (temp _have (vi h'); temp _last (vi 0); gvars gv; temp _s (p_s p);
+                                temp _flush (vi flush)) (SEPx R)) end.
+  { forward. forward. entailer!.
+    unfold h'. rewrite ?Int.unsigned_repr in * by lia.
+    destruct (Z.gtb_spec h (z_avail_in z)); [reflexivity | lia]. }
+  { forward. entailer!.
+    unfold h'. rewrite ?Int.unsigned_repr in * by lia.
+    destruct (Z.gtb_spec h (z_avail_in z)); [lia | reflexivity]. }
+  unfold ds_read in Hm. fold h' in Hm.
+  destruct (Z.eq_dec h' 0) as [E0|E0].
+  { rewrite E0 in Hm. cbn in Hm. injection Hm as <- <-.
+    forward_if.
+    { rewrite E0 in *. contradiction. }
+    forward. unfold dfull, dstate_at. rewrite st_trees_at_split, strm_at_split, st_strm_in_split. unfold dtype_at.
+    entailer!. }
+  rewrite (proj2 (Z.eqb_neq _ _) E0) in Hm.
+  destruct (c_read_buf s z h') as [[z1 data]|] eqn:Er; cbn in Hm; [|discriminate].
+  destruct (mb_write (d_window s) (d_strstart s) data) as [win|] eqn:Ew; cbn in Hm; [|discriminate].
+  injection Hm as <- <-.
+  destruct (st_read_buf_facts s z h' z1 data H ltac:(lia) Er) as (Hz1 & Hz2 & Hz3 & Hd & Hdl).
+  assert (Hmb : mb_ok (d_window s)) by (unfold dstate_ranges in H2; tauto).
+  destruct (mb_write_vals _ _ _ _ Hmb Ew Hd) as (Hwok & Hwlen & Hlo & Hhi & Hwv).
+  assert (Hst : u32_ok (d_strstart s) /\ u32_ok (d_insert s) /\ u32_ok (d_w_size s)) by (unfold dstate_ranges in H2; tauto).
+  forward_if.
+  2: { exfalso. match goal with Hx : Int.repr h' = Int.zero |- _ =>
+         change Int.zero with (Int.repr 0) in Hx; apply repr_inj_unsigned in Hx; rep_lia end. }
+  unfold win_at, match_at, stat_at. rewrite st_deflate_globals_split. Intros.
+  forward. forward. forward.
+  set (L := Zlength (mb_val (d_window s))) in *.
+  set (lo := d_strstart s) in *.
+  assert (HL : Zlength (mb_vals (d_window s)) = L) by (apply Zlength_mb_vals; auto).
+  assert_PROP (field_compatible (tarray tuchar L) [] (p_window p)) as Hfc by entailer!.
+  rewrite (split3_data_at_Tarray_tuchar Ews L lo (lo + Zlength data)) by lia.
+  rewrite !field_address0_offset by auto with field_compatible.
+  assert (Hnfo : forall i, nested_field_offset (Tarray tuchar L noattr) (SUB i) = i)
+    by (intros; simpl; unfold Ctypes.sizeof; lia).
+  rewrite !Hnfo. Intros.
+  replace (lo + Zlength data - lo) with (Zlength data) by lia.
+  sep_apply (data_at_data_at_ Ews (Tarray tuchar (Zlength data) noattr)
+    (sublist lo (lo + Zlength data) (mb_vals (d_window s))) (offset_val lo (p_window p))).
+  sep_apply (st_strm_in_fold z (p_s p) (p_strm p) pin msgv gv).
+  assert_PROP (isptr (p_strm p)) as Hps by entailer!.
+  pose proof (field_compatible_isptr _ _ _ Hfc) as Hpw.
+  forward_call (p_strm p, p_s p, pin, msgv, ish, z, s, h', offset_val lo (p_window p), (z1, data), gv).
+  { apply prop_right. destruct (p_window p) eqn:Epw; try contradiction.
+    destruct (p_strm p); try contradiction. cbn.
+    clear - Hst. destruct Hst as [Hs1 _]. unfold u32_ok in *.
+    rewrite !(Ptrofs.mul_commut (Ptrofs.repr 1)), !Ptrofs.mul_one.
+    unfold Ptrofs.of_intu, Ptrofs.of_int. rewrite !Int.unsigned_repr by rep_lia.
+    reflexivity. }
+  { unfold dstate_ranges in H2; tauto. }
+  cbn [fst snd].
+  forward. forward. forward. forward.
+  set (m := u32 (d_w_size s - d_insert s)).
+  set (t12 := if h' >? m then m else h').
+  match goal with |- semax _ (PROPx _ (LOCALx (_ :: _ :: ?Q) (SEPx ?R))) _ _ =>
+    forward_if (PROPx [] (LOCALx (temp _t'12 (vi t12) :: Q) (SEPx R))) end.
+  { forward. forward. forward. entailer!.
+    match goal with Hx : context [Int.unsigned (Int.repr ?x)] |- _ =>
+      rewrite st_unsigned_repr_u32 in Hx; change (u32 x) with m in Hx end.
+    unfold t12; match goal with |- context [if ?a >? m then _ else _] => destruct (Z.gtb_spec a m) end; [|lia].
+    unfold vi, m. rewrite st_repr_u32. reflexivity. }
+  { forward. entailer!.
+    match goal with Hx : context [Int.unsigned (Int.repr ?x)] |- _ =>
+      rewrite st_unsigned_repr_u32 in Hx; change (u32 x) with m in Hx end.
+    unfold t12; match goal with |- context [if ?a >? m then _ else _] => destruct (Z.gtb_spec a m) end; [lia|].
+    reflexivity. }
+  forward. forward.
+  match goal with |- context [dstate_at ?x p gv] => set (s2 := x) end.
+  assert (Hr2 : dstate_ranges s2) by (apply st_dstate_ranges_read; auto; lia).
+  replace (Vint (Int.add (Int.repr lo) (Int.repr h'))) with (vi (u32 (lo + h')))
+    by (unfold vi; rewrite st_repr_u32, add_repr; reflexivity).
+  replace (Vint (Int.add (Int.repr (d_insert s)) (Int.repr t12))) with (vi (u32 (d_insert s + t12)))
+    by (unfold vi; rewrite st_repr_u32, add_repr; reflexivity).
+  unfold dstate_at. rewrite st_trees_at_split, strm_at_split, st_deflate_globals_split.
+  change (d_trm s2) with (d_trm s). change (hash_at s2 p) with (hash_at s p).
+  change (cfg_at s2 p) with (cfg_at s p). change (stat_at s2 p) with (stat_at s p).
+  change (win_at s2 p) with (win_at (set_d_window s win) p).
+  change (match_at s2 p) with (match_at (set_d_insert (set_d_strstart s (u32 (lo + h'))) (u32 (d_insert s + t12))) p).
+  unfold dtype_at, win_at, match_at, stat_at, strm_out_fields, out_space.
+  cbn [set_d_insert set_d_strstart set_d_window d_window d_window_size d_w_size d_w_bits d_w_mask d_high_water
+    d_block_start d_match_length d_prev_match d_match_available d_strstart d_match_start d_lookahead
+    d_prev_length d_insert d_slid].
+  destruct Hout as (Ho1 & Ho2 & Ho3). rewrite Ho1, Ho2, Ho3.
+  rewrite Hwlen.
+  rewrite (split3_data_at_Tarray_tuchar Ews L lo (lo + Zlength data) (mb_vals win)) by (try list_solve; lia).
+  rewrite !field_address0_offset by auto with field_compatible. rewrite !Hnfo.
+  replace (lo + Zlength data - lo) with (Zlength data) by lia.
+  rewrite Hwv.
+  pose proof (st_app3_sublists (sublist 0 lo (mb_vals (d_window s))) (map vi data)
+    (sublist (lo + Zlength data) L (mb_vals (d_window s)))) as (E1 & E2 & E3).
+  rewrite ?Zlength_map, ?Zlength_sublist in E1 by lia.
+  rewrite ?Zlength_map, ?Zlength_sublist in E2 by lia.
+  rewrite ?Zlength_map, ?Zlength_sublist in E3 by lia.
+  replace (lo - 0) with lo in * by lia.
+  replace (lo + Zlength data + (L - (lo + Zlength data))) with L in E3 by lia.
+  rewrite E1, E2, E3. clear E1 E2 E3.
+  rewrite st_strm_in_split.
+  entailer!.
+Qed.

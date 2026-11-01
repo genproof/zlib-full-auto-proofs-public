@@ -1,0 +1,230 @@
+(** * deflate_slow's body against [deflate_slow_spec] (DSpec.compress_spec, model DModel2.c_deflate_slow).
+    Shared lemmas: CompressKit.v; the worked pattern (refill, tally, FLUSH_BLOCK, tail): Body_huff.v. *)
+Require Import VST.floyd.proofauto.
+Require Import Zlib.proof.deflate.DCS.
+Require Import Zlib.proof.deflate.Arith.
+Require Import Zlib.proof.deflate.DSpec.
+Require Import Zlib.proof.trees.TLemmas.
+Require Import Zlib.proof.deflate.Obligations.
+Require Import Zlib.proof.deflate.CompressKit.
+Require Import Zlib.proof.deflate.FlushKit.
+Require Import Zlib.proof.deflate.SlowKit.
+Require Import Zlib.proof.deflate.SlowIns Zlib.proof.deflate.SlowLm Zlib.proof.deflate.SlowDist.
+Require Import Zlib.proof.deflate.SlowLoop Zlib.proof.deflate.SlowLit.
+Require Import Zlib.proof.deflate.SlowPost Zlib.proof.deflate.SlowPartM Zlib.proof.deflate.SlowPartL.
+Require Import Zlib.proof.deflate.SlowPartW Zlib.proof.deflate.SlowPartT.
+Require Import Zlib.deflate.code.
+#[export] Existing Instance DCS.CS.
+Open Scope cmodel_scope.
+
+(** Kernel conversion hints (see Body_huff.v): without them Qed takes > 10 min. *)
+Local Strategy expand [c_deflate_slow].
+Local Strategy opaque [loop loop2].
+
+Ltac unmc := repeat match goal with M := @abbreviate statement _ |- _ => unfold abbreviate in M; subst M end.
+
+Lemma br_eq : S_br = Ssequence S_cond (Sifthenelse (Etempvar _t'22 tint) S_match S_else).
+Proof. reflexivity. Qed.
+Definition S_mard := SL [0;0;1;1;1;1;1;1;1;1;2;0]%nat.
+Lemma else_eq : S_else = Ssequence S_mard (Sifthenelse (Etempvar _t'70 tint) S_litb S_avail).
+Proof. reflexivity. Qed.
+
+Lemma body_deflate_slow : ob_deflate_slow.
+Proof.
+  unfold ob_deflate_slow.
+  start_function.
+  match goal with |- semax _ _ ?c _ =>
+    change c with (Ssequence (Sloop (Ssequence Sskip S_iter) Sskip) (Ssequence S_tlit S_tail)) end.
+  unfold c_deflate_slow in H0.
+  inv_bind H0. destruct x as [[s1 z1] rx].
+  apply loop_runs in Ha.
+  assert_PROP (Zlength rest = z_avail_out z) as Hrest by (unfold dfull, out_space; entailer!).
+  forward_loop (EX s' : dstate, EX z' : strm, EX msgv' : val,
+     PROP (runs (dsl_body flush) (s', z') (s1, z1, rx); out_grow z z')
+     LOCAL (gvars gv; temp _s (p_s p); temp _flush (vi flush))
+     SEP (dfull s' z' p pin pout ish (rest_after z z' rest) msgv' gv; deflate_globals gv))
+   break: (EX msgv' : val,
+     PROP (rx = None; out_grow z z1)
+     LOCAL (gvars gv; temp _s (p_s p); temp _flush (vi flush))
+     SEP (dfull s1 z1 p pin pout ish (rest_after z z1 rest) msgv' gv; deflate_globals gv)).
+  { (Exists s z msgv; unfold dfull; Intros; unfold out_space; Intros;
+    rewrite rest_after_refl by auto; entailer!; apply out_grow_refl). }
+  Intros s' z' msgv'. rename H1 into Hrun, H2 into Hgrow.
+  destruct (runs_some _ _ _ Hrun) as [o Hbody]. pose proof Hbody as Ho.
+  unfold dsl_body in Ho. inv_bind Ho. rename x into rf, Ha0 into Hrf.
+  unfold abbreviate in MORE_COMMANDS; subst MORE_COMMANDS.
+  rewrite <- semax_seq_skip. rewrite iter_eq.
+  cbv [S_refill SL ssub f_deflate_slow fn_body].
+  unfold dfull, dstate_at. Intros. unfold match_at. Intros.
+  forward.
+  forward_if (EX s2 : dstate, EX z2 : strm, EX msgv2 : val,
+     PROP (c_refill need_min_lookahead flush s' z' = Some (inl (s2, z2)); out_grow z z2)
+     LOCAL (gvars gv; temp _s (p_s p); temp _flush (vi flush))
+     SEP (dfull s2 z2 p pin pout ish (rest_after z z2 rest) msgv2 gv; deflate_globals gv)).
+  - (* lookahead < DState.MIN_LOOKAHEAD: fill_window *)
+    assert (El : d_lookahead s' < DState.MIN_LOOKAHEAD).
+    { assert (0 <= d_lookahead s' <= Int.max_unsigned) by drange.
+      rewrite Int.unsigned_repr in H5 by lia. unfold DState.MIN_LOOKAHEAD, DState.MAX_MATCH, MIN_MATCH. lia. }
+    unfold c_refill, need_min_lookahead in Hrf. rewrite (proj2 (Z.ltb_lt _ _) El) in Hrf.
+    inv_bind Hrf. destruct x as [s2 z2]. rename Ha0 into Hfw.
+    sep_apply (match_at_fold s' p).
+    sep_apply (dfull_fold s' z' p pin pout ish (rest_after z z' rest) msgv' gv); auto.
+    sep_apply (dfull_split_in s' z' p pin pout ish (rest_after z z' rest) msgv' gv).
+    Intros. forward_call (s', z', p, pin, ish, msgv', (s2, z2), gv).
+    destruct (c_fill_window_out _ _ _ Hfw) as (Eo1 & Eo2 & Eo3). cbn [snd] in Eo1, Eo2, Eo3.
+    pose proof (c_fill_window_grow _ _ _ Hfw) as Hg2. cbn [snd] in Hg2.
+    cbn [fst snd]. Intros msgv2.
+    sep_apply (dfull_join_in s2 z' z2 p pin pout ish (rest_after z z' rest) msgv2 gv Eo1 Eo2 Eo3).
+    rewrite <- (rest_after_out z z' z2 rest Eo1).
+    unfold dfull, dstate_at. Intros. unfold match_at. Intros.
+    forward.
+    assert (0 <= d_lookahead s2 <= Int.max_unsigned) by drange.
+    match goal with |- semax _ (PROPx ?P (LOCALx ?L (SEPx ?S))) _ _ =>
+      forward_if (PROPx P (LOCALx (temp _t'1 (vi (Z.b2z ((d_lookahead s2 <? DState.MIN_LOOKAHEAD) && (flush =? DState.Z_NO_FLUSH))%bool)) :: L) (SEPx S))) end.
+    + forward.
+      rewrite (proj2 (Z.ltb_lt _ _) (ltac:(unfold DState.MIN_LOOKAHEAD, DState.MAX_MATCH, MIN_MATCH; lia)
+                                    : d_lookahead s2 < DState.MIN_LOOKAHEAD)).
+      unfold DState.Z_NO_FLUSH. destruct (Z.eqb_spec flush 0);
+        [subst flush; entailer! | entailer!; rewrite Int.eq_false; [reflexivity | intro E; apply repr_inj_signed in E; rep_lia]].
+    + forward.
+      rewrite (proj2 (Z.ltb_ge _ _) (ltac:(unfold DState.MIN_LOOKAHEAD, DState.MAX_MATCH, MIN_MATCH; lia)
+                                    : DState.MIN_LOOKAHEAD <= d_lookahead s2)).
+      entailer!.
+    + destruct ((d_lookahead s2 <? DState.MIN_LOOKAHEAD) && (flush =? DState.Z_NO_FLUSH))%bool eqn:Ebb.
+      * (* return need_more *)
+        forward_if; [| match goal with Hn : Int.repr _ = Int.zero |- _ => discriminate Hn end].
+        inversion Hrf; subst rf. inversion Ho; subst o.
+        apply (runs_exit_eq _ _ _ _ Hrun) in Hbody. inversion Hbody; subst s1 z1 rx.
+        cbn in H0. inversion H0; subst r.
+        forward.
+        unfold dfull_post. cbn [fst snd]. Exists msgv2.
+        sep_apply (match_at_fold s2 p).
+        sep_apply (dfull_fold s2 z2 p pin pout ish (rest_after z z2 rest) msgv2 gv); auto.
+      * forward_if; [match goal with Hn : Int.repr _ <> Int.zero |- _ => exfalso; apply Hn; reflexivity end |].
+        forward.
+        forward_if.
+        -- (* lookahead == 0: break *)
+           assert (El2 : d_lookahead s2 = 0) by (first [assumption | repr_eq]).
+           rewrite El2 in Hrf. cbn in Hrf. inversion Hrf; subst rf. inversion Ho; subst o.
+           apply (runs_exit_eq _ _ _ _ Hrun) in Hbody. inversion Hbody; subst s1 z1 rx.
+           forward.
+           Exists msgv2.
+           sep_apply (match_at_fold s2 p).
+           sep_apply (dfull_fold s2 z2 p pin pout ish (rest_after z z2 rest) msgv2 gv); auto.
+           entailer!. eapply out_grow_trans; eauto.
+        -- forward.
+           assert (El2 : d_lookahead s2 <> 0) by (first [assumption | intro E; rewrite E in *; contradiction]).
+           Exists s2 z2 msgv2.
+           sep_apply (match_at_fold s2 p).
+           sep_apply (dfull_fold s2 z2 p pin pout ish (rest_after z z2 rest) msgv2 gv); auto.
+           entailer!. split; [| eapply out_grow_trans; eauto].
+           unfold c_refill, need_min_lookahead. rewrite (proj2 (Z.ltb_lt _ _) El), Hfw. cbn.
+           change 262 with DState.MIN_LOOKAHEAD. rewrite Ebb, (proj2 (Z.eqb_neq _ _) El2). reflexivity.
+  - (* lookahead >= MIN_LOOKAHEAD *)
+    forward.
+    assert (El : DState.MIN_LOOKAHEAD <= d_lookahead s').
+    { assert (0 <= d_lookahead s' <= Int.max_unsigned) by drange.
+      rewrite Int.unsigned_repr in * by lia. unfold DState.MIN_LOOKAHEAD, DState.MAX_MATCH, MIN_MATCH. lia. }
+    Exists s' z' msgv'.
+    sep_apply (match_at_fold s' p).
+    sep_apply (dfull_fold s' z' p pin pout ish (rest_after z z' rest) msgv' gv); auto.
+    entailer!. unfold c_refill, need_min_lookahead. rewrite (proj2 (Z.ltb_ge _ _) El). reflexivity.
+  - (* after the refill *)
+    Intros s2 z2 msgv2.
+    match goal with E : c_refill _ _ _ _ = Some (inl _) |- _ => rewrite E in Hrf end.
+    inversion Hrf; subst rf. clear Hrf.
+    match goal with E : c_refill _ _ _ _ = Some (inl _) |- _ => rename E into Href end.
+    match goal with E : out_grow z z2 |- _ => rename E into Hgrow2 end.
+    rewrite dsl_step_eq in Ho. inv_bind Ho. destruct x as [s3 hh]. rename Ha0 into Hih.
+    inv_bind Ho. rename x into s4, Ha0 into Hprep.
+    assert_PROP (dstate_ranges s2) as Hr2 by (unfold dfull, dstate_at; entailer!).
+    pose proof (c_insert_head_range _ _ _ Hr2 Hih) as Hhh.
+    unfold abbreviate in MORE_COMMANDS; subst MORE_COMMANDS.
+    cbv [S_hh0 SL ssub f_deflate_slow fn_body].
+    forward.
+    eapply semax_seq'.
+    { apply (inshead_frag p pin pout ish (rest_after z z2 rest) msgv2 gv flush s2 s3 z2 hh Hih). }
+    unmc. rewrite seq_assoc, seq_assoc.
+    eapply semax_seq'.
+    { apply (lm_frag p pin pout ish (rest_after z z2 rest) msgv2 gv flush s3 s4 z2 hh Hhh Hprep). }
+    unmc. rewrite br_eq.
+    cbv [S_cond SL ssub f_deflate_slow fn_body].
+    assert_PROP (dstate_ranges s4) as Hr4 by (unfold dfull, dstate_at; entailer!).
+    unfold dfull, dstate_at. Intros. unfold match_at. Intros.
+    assert (0 <= d_prev_length s4 <= Int.max_unsigned) by drange.
+    assert (0 <= d_match_length s4 <= Int.max_unsigned) by drange.
+    forward.
+    match goal with |- semax _ (PROPx ?P (LOCALx ?L (SEPx ?S))) _ _ =>
+      forward_if (PROPx P (LOCALx (temp _t'22 (vi (Z.b2z ((d_prev_length s4 >=? MIN_MATCH) &&
+                                     (d_match_length s4 <=? d_prev_length s4))%bool)) :: L) (SEPx S))) end.
+    + forward. forward. forward. entailer!.
+      rewrite (proj2 (Z.geb_le _ _) (ltac:(unfold MIN_MATCH; lia) : MIN_MATCH <= d_prev_length s4)).
+      destruct (zlt _ _); destruct (Z.leb_spec (d_match_length s4) (d_prev_length s4)); try reflexivity; lia.
+    + forward. entailer!.
+      destruct (Z.geb_spec (d_prev_length s4) MIN_MATCH); [unfold MIN_MATCH in *; lia | reflexivity].
+    + unfold dsl_decide in Ho.
+      destruct ((d_prev_length s4 >=? MIN_MATCH) && (d_match_length s4 <=? d_prev_length s4))%bool eqn:Ecd.
+      * (* output the previous match *)
+        forward_if; [| match goal with Hn : Int.repr _ = Int.zero |- _ => discriminate Hn end].
+        rewrite match_eq. cbv [S_maxins SL ssub f_deflate_slow fn_body].
+        assert (0 <= d_strstart s4 <= Int.max_unsigned) by drange.
+        assert (0 <= d_lookahead s4 <= Int.max_unsigned) by drange.
+        forward. forward. forward.
+        inv_bind Ho. destruct x as [s5 bf]. rename Ha0 into Hdist.
+        inv_bind Ho. rename x into s6, Ha0 into Hloop.
+        set (mi := u32 (d_strstart s4 + d_lookahead s4 - MIN_MATCH)) in Hloop.
+        assert (Hmi : 0 <= mi <= Int.max_unsigned) by apply u32_range.
+        sep_apply (match_at_fold s4 p).
+        sep_apply (dfull_fold s4 z2 p pin pout ish (rest_after z z2 rest) msgv2 gv); auto.
+        eapply semax_seq'.
+        { eapply semax_pre; [| apply (dist_frag p pin pout ish (rest_after z z2 rest) msgv2 gv flush s4 s5 z2 mi bf Hdist)].
+          entailer!. subst mi. unfold vi. rewrite repr_u32. reflexivity. }
+        unmc. rewrite seq_assoc, seq_assoc, seq_assoc, seq_assoc, seq_assoc.
+        eapply semax_seq'.
+        { apply (insloop_frag p pin pout ish (rest_after z z2 rest) msgv2 gv flush s5 s6 z2 (vi (Z.b2z bf)) mi
+                   ins2_proof Hmi Hloop). }
+        change (c_bflush (dsl_post_loop s6) z2 bf = Some o) in Ho.
+        set (s7 := dsl_post_loop s6) in *. clearbody s7.
+        unmc.
+        apply (slow_ifbf_part p pin pout ish rest gv flush z r s1 z1 rx _ s' z' o s7 z2 msgv2 bf
+                 H Hrest H0 Hrun Hbody Ho Hgrow2).
+      * (* literal or wait *)
+        forward_if; [match goal with Hn : Int.repr _ <> Int.zero |- _ => exfalso; apply Hn; reflexivity end |].
+        rewrite else_eq. cbv [S_mard SL ssub f_deflate_slow fn_body].
+        assert (Hma : Int.min_signed <= d_match_available s4 <= Int.max_signed) by drange.
+        forward.
+        forward_if.
+        -- (* match_available: output the literal before strstart *)
+           assert (Ema : d_match_available s4 <> 0)
+             by (first [assumption | intro E; match goal with Hn : Int.repr _ <> Int.zero |- _ => apply Hn; rewrite E; reflexivity end]).
+           rewrite (proj2 (Z.eqb_neq _ _) Ema) in Ho. cbn [negb] in Ho.
+           inv_bind Ho. rename x into c, Ha0 into Hc.
+           inv_bind Ho. destruct x as [s5 bf]. rename Ha0 into Htl.
+           inv_bind Ho. destruct x as [s6 z6]. rename Ha0 into Hfo.
+           sep_apply (match_at_fold s4 p).
+           sep_apply (dfull_fold s4 z2 p pin pout ish (rest_after z z2 rest) msgv2 gv); auto.
+           rewrite litb_eq.
+           eapply semax_seq'.
+           { eapply semax_pre; [| apply (lit_frag p pin pout ish (rest_after z z2 rest) msgv2 gv flush s4 s5 z2 c bf Hc Htl)].
+             entailer!. }
+           unmc.
+           apply (slow_litrest_part p pin pout ish rest gv flush z r s1 z1 rx _ s' z' o s5 s6 z2 z6 msgv2 bf
+                    H Hrest H0 Hrun Hbody Hfo Ho Hgrow2).
+        -- (* no match available: wait *)
+           assert (Ema : d_match_available s4 = 0)
+             by (first [assumption | match goal with Hz : Int.repr _ = Int.zero |- _ =>
+                   apply repr_inj_signed in Hz; [exact Hz | unfold repable_signed; drange | unfold repable_signed; rep_lia] end]).
+           rewrite Ema in Ho. cbn in Ho. inversion Ho; subst o.
+           apply (runs_step_eq _ _ _ _ Hrun) in Hbody.
+           sep_apply (match_at_fold s4 p).
+           sep_apply (dfull_fold s4 z2 p pin pout ish (rest_after z z2 rest) msgv2 gv); auto.
+           eapply semax_pre; [| apply (slow_avail_part p pin pout ish rest gv flush z r s1 z1 rx s4 z2 msgv2 Hbody Hgrow2)].
+           entailer!.
+  - (* after the loop: the pending literal, s->insert, the tail *)
+    Intros msgv1. subst rx.
+    change (bind (dsl_tlit s1) (fun s0 => c_deflate_tail (set_insert_end s0) z1 flush) = Some r) in H0.
+    inv_bind H0. rename x into s7, Ha0 into Htl.
+    eapply semax_seq'.
+    { apply (tlit_frag p pin pout ish (rest_after z z1 rest) msgv1 gv flush s1 s7 z1 Htl). }
+    unmc. eapply slow_tail_part; eassumption.
+Time Qed.

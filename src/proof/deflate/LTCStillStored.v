@@ -1,0 +1,44 @@
+(** * Core part of the deflate law theory: cf_still, part stored.  Definitions: LTCStill.v. *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.deflate.LTCStill.
+Require Import Zlib.proof.deflate.LTCStoredKit Zlib.proof.deflate.LTCStillStoredKit.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+Theorem still_stored_ok : fill_spec -> fpend_spec2 -> stored_spec ->
+  forall s z flush, compress_pre s z flush -> still_at s -> fn_of s = 0 -> still_concl c_deflate_stored s z flush.
+Proof.
+  intros _ _ _ s z flush Hpre (Hst & Hbs & Hla) Hfn s' z' bs H Hni.
+  destruct Hpre as (HW & _ & _ & _ & Hz & _).
+  destruct HW as (Hprm & _).
+  destruct Hprm as (Hwb & Hws & _).
+  assert (Hw0 : 0 < d_w_size s) by (rewrite Hws; apply Z.pow_pos_nonneg; lia).
+  destruct Hz as (_ & Hni0 & Hai & _).
+  rewrite c_deflate_stored_eq in H. cbn zeta in H.
+  destruct (loop FUEL _ (s, z)) as [[[s1 z1] l]|] eqn:EL; cbn [bind] in H; [|discriminate H].
+  apply loop_runs in EL.
+  pose proof (runs_sv (z_next_in z + z_avail_in z) (z_next_in z) (d_w_size s) _ _ _ _ EL) as Hsv.
+  cbn beta iota in Hsv.
+  specialize (Hsv ltac:(unfold sv; cbn [fst snd]; lia)).
+  destruct Hsv as (H1 & H2 & H3 & H4 & H5 & H6); cbn [fst snd] in *.
+  destruct (c_ds_window s1 z1 _) as [s2|] eqn:EW; cbn [bind] in H; [|discriminate H].
+  assert (Hcase : z_next_in z1 = z_next_in z -> s2 = s1).
+  { intros E. apply (win0_still _ z1). rewrite <- EW. f_equal.
+    replace (z_avail_in z - z_avail_in z1) with 0 by lia. reflexivity. }
+  pose proof (uhw_still s1) as (U1 & U2 & U3).
+  destruct (negb (l =? 0)).
+  { injection H; intros; subst. rewrite (Hcase Hni). cbn. rewrite U1. exact H1. }
+  destruct (_ && _ && _ && _).
+  { injection H; intros; subst. rewrite (Hcase Hni). rewrite U1. exact H1. }
+  apply fill2_still in H; [|lia].
+  destruct H as (s3 & z3 & H & Hz3a & Hz3b & Hz3c).
+  apply blk2_still in H. destruct H as (s4 & z4 & l4 & H & Hz4 & Hs4).
+  assert (E1 : z_next_in z4 = z_next_in z') by (destruct (l4 =? 0); injection H; intros; subst; reflexivity).
+  assert (E2 : d_strstart s' = d_strstart s4) by (destruct (l4 =? 0); injection H; intros; subst; reflexivity).
+  assert (E : z_next_in z1 = z_next_in z) by lia.
+  specialize (Hcase E). subst s2.
+  rewrite E2, Hs4, Hz3c; [rewrite U1; exact H1| |lia].
+  rewrite U2, U3, H2, H3. rewrite Z.geb_leb; apply Z.leb_gt; lia.
+Qed.

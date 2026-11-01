@@ -1,0 +1,186 @@
+(** * The body of deflate.c's read_buf against its shared specification (DSpec.read_buf_spec): ob_read_buf. *)
+Require Import VST.floyd.proofauto.
+Require Import Zlib.proof.deflate.DCS.
+Require Import Zlib.proof.deflate.Arith.
+Require Import Zlib.proof.deflate.DSpec.
+Require Import Zlib.proof.trees.TLemmas.
+Require Import Zlib.proof.deflate.Obligations.
+Require Import Zlib.deflate.code.
+Require Import Zlib.proof.zutil.Libc Zlib.proof.adler32.Spec Zlib.proof.crc32.Spec QuickProof.Assembly.
+
+#[export] Existing Instance DCS.CS.
+
+Open Scope cmodel_scope.
+
+Section Buf.
+Context {cs: compspecs}.
+
+Lemma tuchar_offset0' n j p:
+  field_compatible (tarray tuchar n) [] p -> 0 <= j <= n ->
+  field_address0 (Tarray tuchar n noattr) [ArraySubsc j] p = offset_val j p.
+Proof.
+  intros. rewrite field_address0_offset.
+  - simpl. f_equal. lia.
+  - eapply field_compatible0_cons_Tarray; [reflexivity | auto | lia].
+Qed.
+
+Lemma data_at_tuchar_split3' sh n a b (v: list val) p:
+  field_compatible (tarray tuchar n) [] p -> 0 <= a <= b -> b <= n -> Zlength v = n ->
+  data_at sh (tarray tuchar n) v p =
+  (data_at sh (tarray tuchar a) (sublist 0 a v) p *
+   data_at sh (tarray tuchar (b - a)) (sublist a b v) (offset_val a p) *
+   data_at sh (tarray tuchar (n - b)) (sublist b n v) (offset_val b p))%logic.
+Proof.
+  intros FC A B L.
+  unfold tarray. rewrite (split3_data_at_Tarray_tuchar sh n a b v p) by (first [exact L | lia]).
+  rewrite !tuchar_offset0' by (auto; lia). reflexivity.
+Qed.
+
+End Buf.
+
+(** read_buf_spec with the range of wrap (the C compares the 32-bit int). *)
+Definition read_buf_spec_fix :=
+ DECLARE _read_buf
+ WITH strmp : val, sp : val, pin : val, msgv : val, ish : share, z : strm, s : dstate,
+      size : Z, bufp : val, r : strm * list Z, gv : globals
+ PRE [ tptr t_strm, tptr tuchar, tuint ]
+  PROP (0 <= size <= Int.max_unsigned; strm_ranges z; readable_share ish; s32_ok (d_wrap s);
+        c_read_buf s z size = Some r)
+  PARAMS (strmp; bufp; vi size) GLOBALS (gv)
+  SEP (strm_in_at z sp strmp pin msgv gv; in_obj ish z pin;
+       @field_at DCS.CS Ews t_ds (DOT _wrap) (vi (d_wrap s)) sp;
+       @data_at_ DCS.CS Ews (tarray tuchar (Zlength (snd r))) bufp; crc_table_at Ers gv)
+ POST [ tuint ]
+  PROP () RETURN (vi (Zlength (snd r)))
+  SEP (strm_in_at (fst r) sp strmp pin msgv gv; in_obj ish (fst r) pin;
+       @field_at DCS.CS Ews t_ds (DOT _wrap) (vi (d_wrap s)) sp;
+       @data_at DCS.CS Ews (tarray tuchar (Zlength (snd r))) (map vi (snd r)) bufp; crc_table_at Ers gv).
+
+Lemma body_read_buf_fix :
+  @semax_body DSpec.Vprog Gprog_read_buf DCS.CS Zlib.deflate.code.f_read_buf read_buf_spec_fix.
+Proof.
+  start_function. rename H1 into Hw; rename H2 into H1; rename Hw into H2.
+  unfold strm_in_at. Intros.
+  destruct H0 as (Hni & Hai & Hend & Hzin & Hai32 & Htin & _ & _ & _ & Hadl & Hbytes & _).
+  set (len := if z_avail_in z >? size then size else z_avail_in z) in H1.
+  assert (Hgt : size < z_avail_in z -> len = size) by (intro; subst len; destruct (Z.gtb_spec (z_avail_in z) size); lia).
+  assert (Hle : z_avail_in z <= size -> len = z_avail_in z) by (intro; subst len; destruct (Z.gtb_spec (z_avail_in z) size); lia).
+  assert (Hlen : 0 <= len <= z_avail_in z /\ len <= size) by (subst len; destruct (Z.gtb_spec (z_avail_in z) size); lia).
+  remember (gv _zcalloc) as zca eqn:Hzca. remember (gv _zcfree) as zcf eqn:Hzcf.
+  forward.
+  forward_if (temp _len (vi len)).
+  { forward. entailer!. rewrite Hgt by lia. reflexivity. }
+  { forward. entailer!. rewrite Hle by lia. reflexivity. }
+  destruct (Z.eqb_spec len 0) as [E0 | E0].
+  - (* len = 0 *)
+    assert (Hr : r = (z, [])) by (unfold c_read_buf in H1; fold len in H1; rewrite E0 in H1; inv H1; reflexivity).
+    subst r. simpl fst; simpl snd. clearbody len. subst len.
+    forward_if.
+    + forward. unfold strm_in_at. cancel.
+    + exfalso. auto.
+  - set (data := sublist (z_next_in z) (z_next_in z + len) (z_in z)).
+    set (adl := if d_wrap s =? 1 then Zlib.proof.adler32.Model.adler32_z_val (z_adler z) data
+                else if d_wrap s =? 2 then Zlib.proof.crc32.Model.ref_crc32 (z_adler z) data else z_adler z).
+    assert (Hr : r = (mkST (z_in z) (z_next_in z + len) (z_avail_in z - len) (u64 (z_total_in z + len))
+                        (z_out z) (z_avail_out z) (z_total_out z) adl (z_msg z), data)).
+    { unfold c_read_buf in H1. fold len in H1. destruct (Z.eqb_spec len 0); [lia|].
+      unfold rds in H1. simpl in H1.
+      rewrite (proj2 (Z.leb_le 0 (z_next_in z))), (proj2 (Z.leb_le 0 len)),
+        (proj2 (Z.leb_le (z_next_in z + len) (Zlength (z_in z)))) in H1 by lia.
+      simpl in H1. subst adl data.
+      destruct (d_wrap s =? 1), (d_wrap s =? 2); inv H1; destruct z; reflexivity. }
+    subst r. simpl fst; simpl snd. clearbody len.
+    assert (Hdl : Zlength data = len) by (subst data; rewrite Zlength_sublist; lia).
+    rewrite Hdl.
+    forward_if.
+    { exfalso; lia. }
+    unfold in_obj.
+    assert_PROP (field_compatible (tarray tuchar (Zlength (z_in z))) [] pin) as FCin by entailer!.
+    assert (Pin : isptr pin) by (destruct FCin; auto).
+    forward. forward. forward.
+    rewrite (data_at_tuchar_split3' ish (Zlength (z_in z)) (z_next_in z) (z_next_in z + len) (map vi (z_in z)) pin)
+      by (auto; try lia; apply Zlength_map).
+    replace (z_next_in z + len - z_next_in z) with (Zlength data) by lia.
+    replace (sublist (z_next_in z) (z_next_in z + len) (map vi (z_in z))) with (byte_vals data)
+      by (subst data; unfold byte_vals; rewrite sublist_map; reflexivity).
+    rewrite <- Hdl. Intros.
+    assert (Bd : bytes_ok data).
+    { unfold bytes_ok, data. apply Forall_sublist. eapply Forall_impl; [|exact Hbytes]. intros; simpl in *; rep_lia. }
+    forward_call (Ews, bufp, ish, offset_val (z_next_in z) pin, data).
+    forward. forward.
+    assert_PROP (field_compatible (tarray tuchar (Zlength data)) [] bufp) as FCb by entailer!.
+    assert (Pbuf : isptr bufp) by (destruct FCb; auto).
+    assert (Dpos : 0 < Zlength data) by lia.
+    unfold s32_ok in H2.
+    forward_if (PROP () LOCAL (temp _len (vi (Zlength data)); gvars gv; temp _strm strmp; temp _buf bufp)
+      SEP (data_at Ews (tarray tuchar (Zlength data)) (byte_vals data) bufp;
+           data_at ish (tarray tuchar (Zlength data)) (byte_vals data) (offset_val (z_next_in z) pin);
+           field_at Ews t_strm (DOT _next_in) (offset_val (z_next_in z) pin) strmp;
+           field_at Ews t_strm (DOT _avail_in) (Vint (Int.sub (Int.repr (z_avail_in z)) (Int.repr (Zlength data)))) strmp;
+           field_at Ews t_strm (DOT _total_in) (vl (z_total_in z)) strmp;
+           field_at Ews t_strm (DOT _msg) msgv strmp;
+           field_at Ews t_strm (DOT _state) sp strmp;
+           field_at Ews t_strm (DOT _zalloc) zca strmp;
+           field_at Ews t_strm (DOT _zfree) zcf strmp;
+           field_at Ews t_strm (DOT _opaque) nullval strmp;
+           field_at Ews t_strm (DOT _adler) (vl adl) strmp;
+           field_at_ Ews t_strm (DOT _reserved) strmp;
+           data_at ish (tarray tuchar (z_next_in z)) (sublist 0 (z_next_in z) (map vi (z_in z))) pin;
+           data_at ish (tarray tuchar (Zlength (z_in z) - (z_next_in z + Zlength data)))
+             (sublist (z_next_in z + Zlength data) (Zlength (z_in z)) (map vi (z_in z)))
+             (offset_val (z_next_in z + Zlength data) pin);
+           field_at Ews t_ds (DOT _wrap) (vi (d_wrap s)) sp;
+           crc_table_at Ers gv)).
+    { (* wrap == 1 *)
+      assert (Hw : d_wrap s = 1) by assumption.
+      forward.
+      rewrite (data_at_tuchar_cs DCS.CS Zlib.units.Adler32.CS Ews (Zlength data) (byte_vals data) bufp).
+      forward_call (z_adler z, bufp, Zlength data, false, Ews, bufp, 0, Zlength data, byte_vals data, data, false, Ews).
+      { cancel. }
+      { change (byte_vals data) with (bytes_rep data). apply cbuf_ok_whole; auto. }
+      simpl.
+      rewrite (data_at_tuchar_cs Zlib.units.Adler32.CS DCS.CS Ews (Zlength data) (byte_vals data) bufp).
+      forward.
+      assert (Ha : adl = Zlib.proof.adler32.Model.adler32_z_val (z_adler z) data) by (subst adl; rewrite Hw; reflexivity).
+      rewrite Ha. entailer!. }
+    { (* wrap != 1 *)
+      assert (Hw1 : d_wrap s <> 1) by assumption.
+      forward. forward.
+      forward_if.
+      - assert (Hw : d_wrap s = 2) by assumption.
+        forward.
+        rewrite (data_at_tuchar_cs DCS.CS Zlib.units.Crc32.CS Ews (Zlength data) (byte_vals data) bufp).
+        forward_call (z_adler z, bufp, Zlength data, false, Ews, bufp, 0, Zlength data, byte_vals data, data, false, Ews, gv, Ers).
+        { cancel. }
+        { change (byte_vals data) with (bytes_rep data). apply cbuf_ok_whole; auto. }
+        simpl.
+        rewrite (data_at_tuchar_cs Zlib.units.Crc32.CS DCS.CS Ews (Zlength data) (byte_vals data) bufp).
+        forward.
+        assert (Ha : adl = Zlib.proof.crc32.Model.ref_crc32 (z_adler z) data)
+          by (subst adl; rewrite Hw; reflexivity).
+        rewrite Ha. entailer!.
+      - forward.
+        assert (Ha : adl = z_adler z)
+          by (unfold adl; destruct (Z.eqb_spec (d_wrap s) 1), (Z.eqb_spec (d_wrap s) 2); congruence).
+        rewrite Ha. entailer!. }
+    forward. forward. forward. forward. forward.
+    assert (Enx : force_val (sem_add_ptr_int tuchar Unsigned (offset_val (z_next_in z) pin) (vi (Zlength data)))
+                  = offset_val (z_next_in z + Zlength data) pin).
+    { destruct pin; try contradiction. unfold vi. simpl. f_equal. rewrite Ptrofs.add_assoc. f_equal.
+      unfold Ptrofs.of_intu, Ptrofs.of_int. rewrite Int.unsigned_repr by rep_lia.
+      rewrite ptrofs_mul_repr, ptrofs_add_repr. f_equal. lia. }
+    assert (Etot : Int64.repr (z_total_in z + Zlength data) = Int64.repr (u64 (z_total_in z + len))).
+    { rewrite Hdl. unfold u64. change 18446744073709551616 with Int64.modulus.
+      rewrite <- Int64.unsigned_repr_eq, Int64.repr_unsigned. reflexivity. }
+    rewrite Enx, Etot.
+    unfold strm_in_at, in_obj. simpl.
+    rewrite (data_at_tuchar_split3' ish (Zlength (z_in z)) (z_next_in z) (z_next_in z + Zlength data) (map vi (z_in z)) pin)
+      by (auto; try lia; apply Zlength_map).
+    replace (z_next_in z + Zlength data - z_next_in z) with (Zlength data) by lia.
+    replace (sublist (z_next_in z) (z_next_in z + Zlength data) (map vi (z_in z))) with (byte_vals data)
+      by (subst data; unfold byte_vals; rewrite sublist_map, Hdl; reflexivity).
+    rewrite <- Hdl. unfold vi, vl. cancel.
+Qed.
+
+Lemma body_read_buf : ob_read_buf.
+Proof. exact body_read_buf_fix. Qed.

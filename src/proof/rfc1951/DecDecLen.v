@@ -1,0 +1,227 @@
+(* Part of DecDec.group_dec: the pass from LEN (fast path, literal, end of block, length: falls through to LENEXT).  Statements: DecDecDefs.v; helpers: DecDecKd.v; template:
+   DecDecLit.v (pass_lit). *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Import Zlib.proof.rfc1951.DecDecKd.
+Import ListNotations.
+Local Open Scope Z_scope.
+
+(* c_LEN after the lookups and the DROPBITS *)
+Definition len_tail (here: entry) (m: mst) : iout :=
+  let m := upd_s m (fun s => set_i_length s (e_val here)) in
+  if e_op here =? 0 then IBrk (set_mode m LIT) else
+  if negb (Z.land (e_op here) 32 =? 0) then
+    IBrk (set_mode (upd_s m (fun s => set_i_back s (-1))) Zlib.proof.inflate.Model.TYPE) else
+  if negb (Z.land (e_op here) 64 =? 0) then IBrk (set_bad m M_ll_code) else
+  c_LENEXT lenfix_list distfix_list (set_mode (upd_s m (fun s => set_i_extra s (Z.land (e_op here) 15))) LENEXT).
+
+Lemma c_LEN_slow m :
+  (6 <=? m_have m) && (258 <=? m_left m) && (m_bits m <? 8) = false ->
+  c_LEN lenfix_list distfix_list (fast lenfix_list distfix_list) m =
+  let '(here, m', ok) := dcode (islink LENS) (i_lencode (m_s m)) (i_lenbits (m_s m))
+                                (upd_s m (fun s => set_i_back s 0)) in
+  if negb ok then IBrk m' else len_tail here m'.
+Proof.
+  intros F. unfold c_LEN. rewrite F. unfold dcode.
+  change (i_lencode (m_s (upd_s m (fun s => set_i_back s 0)))) with (i_lencode (m_s m)).
+  change (i_lenbits (m_s (upd_s m (fun s => set_i_back s 0)))) with (i_lenbits (m_s m)).
+  destruct (lookup1 lenfix_list distfix_list (i_lencode (m_s m)) (i_lenbits (m_s m)) _) as [[h m1] [|]];
+    cbn [negb]; [|reflexivity].
+  unfold islink. change (LENS =? DISTS) with false.
+  destruct (negb (e_op h =? 0) && (Z.land (e_op h) 240 =? 0)).
+  - destruct (lookup2 lenfix_list distfix_list (i_lencode (m_s m)) h m1) as [[h2 m2] [|]]; reflexivity.
+  - reflexivity.
+Qed.
+
+Lemma len_bits_le v n : 0 <= n -> Zlength (bits_le v n) = n.
+Proof. intros H. unfold bits_le. rewrite Zlength_map, Zlength_correct, seq_length. lia. Qed.
+
+Lemma len_lens_nonneg ll s : lens_ok ll -> 0 <= Znth s ll.
+Proof.
+  intros L. destruct (Z_lt_le_dec s 0) as [H|H].
+  - rewrite Znth_outofbounds by lia. reflexivity.
+  - destruct (Z_lt_le_dec s (Zlength ll)) as [H'|H'].
+    + pose proof (Forall_Znth _ ll s (conj H H') L) as X. cbn in X. lia.
+    + rewrite Znth_outofbounds by lia. reflexivity.
+Qed.
+
+Lemma len_send_sym ll s : lens_ok ll -> Zlength (send_sym ll s) = Znth s ll.
+Proof.
+  intros L. unfold send_sym, bits_msb. rewrite Zlength_rev. apply len_bits_le, len_lens_nonneg, L.
+Qed.
+
+Lemma len_prefix (S A B: list bool) p :
+  sublist p (p + Zlength (A ++ B)) S = A ++ B -> 0 <= p -> sublist p (p + Zlength A) S = A.
+Proof.
+  intros E Hp. rewrite Zlength_app in E.
+  pose proof (Zlength_nonneg A). pose proof (Zlength_nonneg B).
+  assert (X : sublist 0 (Zlength A) (sublist p (p + (Zlength A + Zlength B)) S) = sublist (0 + p) (Zlength A + p) S).
+  { apply sublist_sublist; lia. }
+  rewrite E, sublist_app1, sublist_same in X by lia. rewrite X at 2. f_equal; lia.
+Qed.
+
+Lemma len_code_nonneg len : 0 <= len_code len.
+Proof. unfold len_code. destruct (len =? 258); [lia|apply Zlength_nonneg]. Qed.
+
+(* the symbol read at LEN: a literal, a length, or the end of block *)
+Lemma len_sym G s k j ll dl syms p0 :
+  lay_stmt -> dctx_ok G -> in_huff G s k j ll dl syms p0 -> 0 <= p0 ->
+  exists sy, used ll sy /\ sublist p0 (p0 + Znth sy ll) (sbits G) = send_sym ll sy /\
+    p0 + Znth sy ll <= 8 * slen G /\ sym_first_len ll syms j = Znth sy ll /\
+    ((j < Zlength syms /\ exists b, sym_at syms j = Lit b /\ sy = b /\ 0 <= b < 256) \/
+     (j < Zlength syms /\ exists len dist, sym_at syms j = Ref len dist /\ sy = 257 + len_code len /\
+        3 <= len <= 258) \/
+     (j = Zlength syms /\ sy = 256)).
+Proof.
+  intros LAY Gok IH Hp0.
+  destruct (LAY G s k j ll dl syms p0 Gok IH) as (LO & _ & U256 & _ & _ & _ & LJ & LE).
+  pose proof IH as (_ & _ & Hj & _).
+  destruct (Z_lt_le_dec j (Zlength syms)) as [J|J].
+  - destruct (LJ J) as (SO & SB & SL & _). clear LJ LE.
+    destruct (sym_at syms j) as [b|len dist] eqn:Es; cbn [send_one sym_ok] in SO, SB, SL.
+    + destruct SO as (Bb & Nz). unfold byte_ok in Bb. destruct U256 as (U1 & _).
+      exists b. rewrite len_send_sym in SB, SL by exact LO.
+      split; [split; [lia|exact Nz]|]. split; [exact SB|]. split; [exact SL|].
+      split; [unfold sym_first_len; rewrite (proj2 (Z.ltb_lt _ _) J), Es; reflexivity|].
+      left. split; [exact J|]. exists b. auto.
+    + destruct SO as (L1 & _ & _ & L4 & L5 & _).
+      pose proof (len_code_nonneg len).
+      exists (257 + len_code len).
+      assert (SB' := len_prefix _ _ _ _ SB Hp0). rewrite len_send_sym in SB' by exact LO.
+      split; [split; [lia|exact L5]|]. split; [exact SB'|]. split.
+      { rewrite !Zlength_app in SL. rewrite len_send_sym in SL by exact LO.
+        repeat match type of SL with context [Zlength ?x] => 
+          lazymatch x with send_sym _ _ => fail | _ => pose proof (Zlength_nonneg x); fail end end.
+        pose proof (Zlength_nonneg (bits_le (len - Znth (len_code len) len_base) (Znth (len_code len) len_extra))).
+        pose proof (Zlength_nonneg (send_sym dl (dist_code dist))).
+        pose proof (Zlength_nonneg (bits_le (dist - Znth (dist_code dist) dist_base) (Znth (dist_code dist) dist_extra))).
+        lia. }
+      split; [unfold sym_first_len; rewrite (proj2 (Z.ltb_lt _ _) J), Es; reflexivity|].
+      right; left. split; [exact J|]. exists len, dist. auto.
+  - assert (J' : j = Zlength syms) by lia. destruct (LE J') as (SB & SL & SE & _). clear LJ LE.
+    exists 256. rewrite len_send_sym in SB, SL by exact LO.
+    split; [exact U256|]. split; [exact SB|]. split; [lia|].
+    split; [unfold sym_first_len; rewrite (proj2 (Z.ltb_ge _ _) J); reflexivity|].
+    right; right. auto.
+Qed.
+
+Lemma len_dstep_ow G pos inp ob flush m1 m2 o :
+  m_ow m1 = m_ow m2 -> dstep_post G pos inp ob flush m1 o -> dstep_post G pos inp ob flush m2 o.
+Proof. intros E. destruct o; cbn [dstep_post]; [|auto]. rewrite E. auto. Qed.
+
+Lemma len_op e : 0 <= e <= 5 ->
+  (16 + e =? 0) = false /\ Z.land (16 + e) 32 = 0 /\ Z.land (16 + e) 64 = 0 /\ Z.land (16 + e) 15 = e.
+Proof.
+  intros H. assert (e = 0 \/ e = 1 \/ e = 2 \/ e = 3 \/ e = 4 \/ e = 5) as D by lia.
+  repeat (destruct D as [D|D]; [subst e; repeat split; reflexivity|]). subst e; repeat split; reflexivity.
+Qed.
+
+Lemma pass_len : dfast_stmt -> lay_stmt -> tabs_stmt -> dcode_stmt -> pass_ok LENEXT (c_LENEXT lenfix_list distfix_list) -> pass_len_ok.
+Proof.
+  intros DF LAY TABS DC PLE G pos inp ob flush m Ctx K MW D Hl Hmd.
+  pose proof Ctx as (Gok & Hpos & Hle & Hinp).
+  destruct ((6 <=? m_have m) && (258 <=? m_left m) && (m_bits m <? 8)) eqn:F.
+  - apply andb_prop in F as [F F3]. apply andb_prop in F as [F1 F2].
+    apply Z.leb_le in F1. apply Z.leb_le in F2. apply Z.ltb_lt in F3.
+    pose proof (DF G pos inp ob m Gok Hpos Hle Hinp K MW Hl Hmd F1 F2 F3) as X. cbv zeta in X.
+    destruct X as (K' & L' & O' & _).
+    unfold c_LEN. rewrite (proj2 (Z.leb_le _ _) F1), (proj2 (Z.leb_le _ _) F2), (proj2 (Z.ltb_lt _ _) F3).
+    cbv beta iota zeta. cbn [dstep_post andb]. split; [exact K'|]. split; [exact O'|].
+    intros E; rewrite L' in E; discriminate.
+  - rewrite (c_LEN_slow m F).
+    pose proof (kd_at _ _ _ _ _ K) as At.
+    destruct (at_mode_len_e _ _ _ _ _ _ At (or_intror Hmd)) as (Hh & k & j & ll & dl & syms & p0 & IH & Ho & Hq & Hb).
+    pose proof Hh as (Hb0 & _).
+    assert (Hp0 : 0 <= p0) by (rewrite <- Hq; lia).
+    destruct (len_sym G (m_s m) k j ll dl syms p0 LAY Gok IH Hp0) as (sy & U & SB & SL & SF & CS).
+    destruct (LAY G (m_s m) k j ll dl syms p0 Gok IH) as (LO & LC & _ & _ & _ & (rest & Fr) & LJ & LE).
+    pose proof IH as (Hblk & _ & Hj & Tl & _).
+    pose proof D as (Tv & _ & Dnx & Dow & Dwn).
+    pose proof (kd_inp _ _ _ _ _ K) as Ki.
+    set (m0 := upd_s m (fun s => set_i_back s 0)).
+    generalize (DC G pos inp m0 LENS (i_lencode (m_s m)) (i_lenbits (m_s m)) ll sy p0 Ctx).
+    intros X. rewrite Ki in Dnx.
+    specialize (X (conj Ki (conj Dnx Hh)) (eq_sym Hq) (or_introl eq_refl)).
+    specialize (X (tvalid_tr _ (m_s m) _ _ _ eq_refl Tv) (tdec_tr (m_s m) _ _ _ _ _ eq_refl Tl) LO LC U SB SL).
+    rewrite SF in Hb. specialize (X Hb).
+    destruct (dcode (islink LENS) (i_lencode (m_s m)) (i_lenbits (m_s m)) m0) as [[here m'] ok].
+    destruct X as (nx & h & b & bk & lv & Em' & Hnx & Hh' & OKT & OKF). subst m'.
+    assert (Hmd0 : md_dec (m_mode m)) by (right; left; exact Hmd).
+    destruct ok.
+    2:{ destruct (OKF eq_refl) as (Lv & Nx & Q & Bl & Sl). subst lv nx. cbn [negb dstep_post].
+      split; [|split].
+      - apply kd_tr with m; auto; try reflexivity.
+        + unfold m0, upd_s; sf_auto.
+        + right; right; left; exact Hmd.
+        + apply at_mode_len_i; [exact Hh' | right; exact Hmd |].
+          exists k, j, ll, dl, syms, p0. split; [|split; [|split]].
+          * apply in_huff_tr with (m_s m); [unfold m0, upd_s; sf_auto | exact IH].
+          * exact Ho.
+          * exact Q.
+          * right. rewrite SF. exact Bl.
+      - exists []. rewrite app_nil_r. reflexivity.
+      - intros _. right; left. split; [reflexivity | exact Sl]. }
+    destruct (OKT eq_refl) as (Lv & MS & Q & Bl). cbn [negb].
+    assert (Lv0 : lv = 0) by (rewrite Lv; exact Hl). clear Lv OKT OKF. subst lv.
+    destruct TABS as (T1 & T2 & T3 & T4 & T5 & T6).
+    destruct CS as [(J & b0 & Es & Esy & Bb) | [(J & len & dist & Es & Esy & Lr) | (J & Esy)]]; subst sy.
+    + (* a literal *)
+      destruct (T3 b0 _ _ Bb MS) as (Eop & Eval).
+      unfold len_tail. cbv beta zeta. rewrite Eop. change (0 =? 0) with true. cbv iota.
+      cbn [dstep_post]. split; [|split].
+      * apply kd_tr with m; auto; try reflexivity.
+        -- unfold set_mode, m0, upd_s; sf_auto.
+        -- right; do 6 right; reflexivity.
+        -- apply at_mode_lit_i; [exact Hh' | reflexivity |].
+           exists k, j, ll, dl, syms, p0, b0. split; [|split; [|split; [|split; [|split; [|split]]]]].
+           ++ apply in_huff_tr with (m_s m); [unfold set_mode, m0, upd_s; sf_auto | exact IH].
+           ++ exact J.
+           ++ exact Es.
+           ++ exact Eval.
+           ++ exact Ho.
+           ++ rewrite len_send_sym by exact LO. exact Q.
+           ++ exact (proj2 Bl).
+      * exists []. rewrite app_nil_r. reflexivity.
+      * intros E. discriminate E.
+    + (* a length *)
+      destruct (T1 len Lr) as (Ic & Ex & _).
+      destruct (T5 (len_code len) _ _ Ic MS) as (Eop & Eval).
+      destruct (len_op _ Ex) as (O1 & O2 & O3 & O4).
+      unfold len_tail. cbv beta zeta. rewrite Eop, O1, O2, O3, O4. cbn [negb Z.eqb].
+      eapply len_dstep_ow; [|apply PLE; [exact Ctx| | |reflexivity|reflexivity]].
+      { reflexivity. }
+      * apply kd_tr with m; auto; try reflexivity.
+        -- unfold set_mode, m0, upd_s; sf_auto.
+        -- right; do 2 right; left; reflexivity.
+        -- apply at_mode_lenext_i; [exact Hh' | reflexivity |].
+           exists k, j, ll, dl, syms, p0, len, dist. split; [|split; [|split; [|split]]].
+           ++ apply in_huff_tr with (m_s m); [unfold set_mode, m0, upd_s; sf_auto | exact IH].
+           ++ exact J.
+           ++ exact Es.
+           ++ exact Ho.
+           ++ split; [exact Eval|]. split; [reflexivity|]. split.
+              ** change (8 * (pos + nx) - b = p0 + Zlength (send_sym ll (257 + len_code len))).
+                 rewrite len_send_sym by exact LO. exact Q.
+              ** left. exact (proj2 Bl).
+      * apply dw_tr with m; [exact D | unfold set_mode, m0, upd_s; sf_auto | reflexivity | | reflexivity | ].
+        -- change (0 <= nx <= Zlength (m_inp m)). rewrite Ki. change (m_nx m <= nx <= Zlength inp) in Hnx. lia.
+        -- change (Zlength (m_ow m) <= m_aout m). lia.
+    + (* the end of the block *)
+      pose proof (T4 _ _ MS) as Eop.
+      destruct (LE J) as (SB' & SL' & SE & Ok1).
+      unfold len_tail. cbv beta zeta. rewrite Eop. change (96 =? 0) with false. change (Z.land 96 32 =? 0) with false.
+      cbn [negb]. cbv iota.
+      cbn [dstep_post]. split; [|split].
+      * apply kd_tr with m; auto; try reflexivity.
+        -- unfold set_mode, m0, upd_s; sf_auto.
+        -- left; reflexivity.
+        -- apply at_mode_type_i; [exact Hh' | reflexivity |].
+           destruct Hblk as (Hk & Hlast).
+           exists (k + 1). split; [unfold nblk in *; lia|]. split; [|split; [|split]].
+           ++ change (8 * (pos + nx) - b = bpos G (k + 1)). rewrite Q. rewrite len_send_sym in SL' by exact LO. exact SL'.
+           ++ change (ob ++ m_ow m = outk G (k + 1)). rewrite Ho. exact Ok1.
+           ++ exact (proj2 Bl).
+           ++ rewrite (proj2 (Z.eqb_neq (k + 1) 0)) by lia. replace (k + 1 - 1) with k by lia. exact Hlast.
+      * exists []. rewrite app_nil_r. reflexivity.
+      * intros E. discriminate E.
+Qed.

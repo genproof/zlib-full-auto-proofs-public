@@ -1,0 +1,44 @@
+(** * deflate_huff part: see LTCHuffKit.v for the statement and the design. *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.deflate.LTCHuffGlue.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+Theorem hbflush_ok : hfbw_stmt -> hbflush_stmt.
+Proof.
+  intros Hfbw s0 z0 flush s z evs s3 syms3 bf HI Hfl Hfn0 HS Hbf Hfr.
+  destruct HI as (Hz0 & Ha0 & Hc & Hq & Hz & Ha & Hl).
+  assert (Hw3 : d_wrap s3 = d_wrap s) by (destruct Hfr as (_ & (_ & W & _) & _); exact W).
+  assert (HL3 : Zlength syms3 <= d_L s3 - 1) by (destruct HS as (_ & _ & _ & _ & _ & _ & _ & L & _); exact L).
+  destruct bf.
+  - symmetry in Hbf. apply Z.eqb_eq in Hbf.
+    destruct (Hfbw s3 z flush syms3 0 HS Hz ltac:(rewrite Hw3; exact Ha) Hfl ltac:(lia)
+                (fun H => ltac:(discriminate H)) (fun _ => or_introl Hbf))
+      as (s' & z' & e & E & Hc' & Hlast & Hz' & Had & Hai & Hla & Hss & Hbs & Hsn & Hbv & _ & Hpz).
+    assert (Hc2 := hcrel_trans_fr _ _ _ _ _ _ _ _ _ _ Hz0 Ha0 Hc Hfr Hc').
+    unfold c_bflush, c_flush_block. rewrite E. cbn [bind].
+    destruct (Z.eqb_spec (z_avail_out z') 0) as [Hz0'|Hn0'].
+    + cbn [andb orb negb Z.eqb Pos.eqb]. eexists; split; [reflexivity|].
+      split; [reflexivity|]. exists (evs ++ [e]). split; [exact Hc2|].
+      cbn [hbpost]. split; [exact (Forall_last0_app _ _ Hl Hlast)|]. split; [exact Hbv|]. right; left; exact Hz0'.
+    + cbn [andb]. eexists; split; [reflexivity|].
+      split; [|split; [exact Hla|exact Hai]].
+      exists (evs ++ [e]). unfold HFI.
+      split; [exact Hz0|]. split; [exact Ha0|]. split; [exact Hc2|].
+      split; [destruct Hc2 as (_ & _ & Ho' & _); exact (quiet_of_flush s' z' Ho' Hbv Hpz Hn0')|].
+      split; [exact Hz'|].
+      split; [rewrite (wrap_hcrel _ _ _ _ _ _ Hc'), Hw3, Had; exact Ha|].
+      exact (Forall_last0_app _ _ Hl Hlast).
+  - assert (HL3' : Zlength syms3 <= d_L s3 - 2) by (symmetry in Hbf; apply Z.eqb_neq in Hbf; lia).
+    destruct (HS0_W s3 syms3 HS HL3') as [HW3 He3].
+    assert (Ho3 : outok s3) by (destruct HS as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & _ & O & _); exact O).
+    assert (Hq3 : quiet s3) by (destruct HS as (_ & _ & _ & _ & _ & _ & _ & _ & _ & _ & _ & _ & Q & _); exact Q).
+    cbn [c_bflush]. eexists; split; [reflexivity|].
+    split; [|split; reflexivity].
+    exists evs. unfold HFI.
+    split; [exact Hz0|]. split; [exact Ha0|].
+    split; [exact (hcrel_hfr _ _ _ _ _ _ _ Hc Hfr HW3 He3 Ho3)|].
+    split; [exact Hq3|]. split; [exact Hz|]. split; [rewrite Hw3; exact Ha|exact Hl].
+Qed.

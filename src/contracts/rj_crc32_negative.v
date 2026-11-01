@@ -51,6 +51,11 @@ Proof. vm_compute. reflexivity. Qed.
 (* ---------------------------------------------------------------------- *)
 (* THE THEOREM.                                                            *)
 (* ---------------------------------------------------------------------- *)
-Theorem rj_crc32_negative : harness_safe whole_prog.
-Proof.
-Admitted.
+(* Generated here as `Theorem rj_crc32_negative : harness_safe whole_prog.`, it is
+   stated and proved (Qed) in src/contracts/laws.v, on this file's
+   whole_prog:
+     Theorem rj_crc32_negative : harness_safe Zlib.contracts.rj_crc32_negative.whole_prog.
+   There it is a projection of `suite` (suite.v), which Requires this
+   file for whole_prog.  This file keeps the generated module Harness,
+   link_* and whole_prog unchanged.  `qp verify` checks the elaborated
+   statement and whole_prog against the contract commit. *)

@@ -1,0 +1,76 @@
+(* RT-D part RLE: deflate_tail after the loop (statement: RTDRleKit.v; model on RTDLTCRleTail.rtail_ok). *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.roundtrip.RTDRleKit.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+(** a block flush of the tail: FLUSH_BLOCK_ONLY by [rffbo_stmt], the stream step by the u64 ranges *)
+Lemma rftail_fbo (Hfbo : rffbo_stmt) s z syms last s' z' dict D BS p :
+  RTS0 s syms -> zall z -> adler_ok (d_wrap s) (z_adler z) -> 0 <= last <= 1 ->
+  Forall F.byte_ok dict -> bytes D -> rkt dict D BS syms s ->
+  0 <= p -> (p - d_bi_valid s) mod 8 = 0 ->
+  c_flush_block_only s z last = Some (s', z') ->
+  exists x blk,
+    zstep (d_wrap s) z z' 0 x /\ wtrees s' [] /\ rkt dict D (BS ++ [blk]) [] s' /\
+    F.bytes_bits (x ++ pend s') ++ bibits s' = bibits s ++ enc_out p [blk] (last =? 1).
+Proof.
+  intros HT Hz Ha Hl Hd HD Hk Hp Hpm E.
+  destruct (Hfbo s z syms last s' z' dict D BS p HT Hz Hl Hd HD Hk Hp Hpm E)
+    as (x & blk & Hzo & Hwt & Hk' & Hbits).
+  exists x, blk. split; [|exact (conj Hwt (conj Hk' Hbits))].
+  apply zout_only_zstep; [exact Hz|exact Ha|exact Hzo|].
+  apply (rfbw_fbo_avail s z last s' z' E). destruct Hz as (_ & Ho & _). exact Ho.
+Qed.
+
+Theorem rftail_ok : fbo_spec -> rffbo_stmt -> rftail_stmt.
+Proof.
+  intros _ Hfbo s z flush s' z' bs dict D BS syms p HW Ho Hq Hz Ha Hfn Hfl Hnf Hla Hai Hss Hd HD Hwt Hk Hp Hpm HC.
+  assert (HW1 := rtail_W_ins s HW).
+  assert (Hss1 : d_strstart (set_d_insert s 0) < d_window_size (set_d_insert s 0)).
+  { destruct HW as (_ & Hs & _). destruct Hs as (_ & _ & Hwsz & _).
+    cbn [set_d_insert d_strstart d_window_size]. unfold MAX_DIST, MIN_LOOKAHEAD, MAX_MATCH, MIN_MATCH in Hss. lia. }
+  assert (Ho1 : outok (set_d_insert s 0)) by (destruct s; exact Ho).
+  assert (Hq1 : quiet (set_d_insert s 0)) by (destruct s; exact Hq).
+  assert (Hfn1 : fn_of (set_d_insert s 0) = 4) by (destruct s; exact Hfn).
+  destruct (W_RTS0 (set_d_insert s 0) HW1 Ho1 Hq1 Hfn1 Hss1) as (syms1 & HT0 & _).
+  assert (Hs1 : syms1 = syms).
+  { destruct HT0 as (_ & _ & _ & _ & _ & _ & T1 & _). destruct Hwt as (T2 & _).
+    exact (rk_tree_ok_uniq _ _ _ _ T1 T2). }
+  subst syms1.
+  assert (Hk1 : rkt dict D BS syms (set_d_insert s 0)) by (destruct s; exact Hk).
+  assert (Hwt1 : wtrees (set_d_insert s 0) syms) by (destruct s; exact Hwt).
+  assert (Ebi : bibits (set_d_insert s 0) = bibits s) by (destruct s; reflexivity).
+  assert (Ebv : d_bi_valid (set_d_insert s 0) = d_bi_valid s) by (destruct s; reflexivity).
+  assert (Ewr : d_wrap (set_d_insert s 0) = d_wrap s) by (destruct s; reflexivity).
+  rewrite <- Ewr in Ha. rewrite <- Ebv in Hpm.
+  unfold c_deflate_tail in HC.
+  destruct (Z.eqb_spec flush Z_FINISH) as [EF|EF].
+  - unfold c_flush_block in HC.
+    destruct (c_flush_block_only (set_d_insert s 0) z 1) as [[s1 z1]|] eqn:E; cbn [bind] in HC; [|discriminate].
+    destruct (rftail_fbo Hfbo _ z syms 1 s1 z1 dict D BS p HT0 Hz Ha ltac:(lia) Hd HD Hk1 Hp Hpm E)
+      as (x & blk & Hzs & Hwt' & Hk' & Hbits).
+    assert (Hb : s' = s1 /\ z' = z1 /\ fin_bs bs = true).
+    { destruct (_ && _); inversion HC; subst; auto. }
+    destruct Hb as (-> & -> & Hfin).
+    exists x, [blk], []. rewrite <- Ewr. rewrite Hfin, <- Ebi.
+    split; [exact Hzs|]. split; [exact Hwt'|]. split; [exact Hk'|].
+    split; [exact Hbits|]. intros _. discriminate.
+  - destruct (negb (d_sym_next (set_d_insert s 0) =? 0)).
+    + unfold c_flush_block in HC.
+      destruct (c_flush_block_only (set_d_insert s 0) z 0) as [[s1 z1]|] eqn:E; cbn [bind] in HC; [|discriminate].
+      destruct (rftail_fbo Hfbo _ z syms 0 s1 z1 dict D BS p HT0 Hz Ha ltac:(lia) Hd HD Hk1 Hp Hpm E)
+        as (x & blk & Hzs & Hwt' & Hk' & Hbits).
+      assert (Hb : s' = s1 /\ z' = z1 /\ fin_bs bs = false).
+      { destruct (_ && _); inversion HC; subst; auto. }
+      destruct Hb as (-> & -> & Hfin).
+      exists x, [blk], []. rewrite <- Ewr. rewrite Hfin, <- Ebi.
+      split; [exact Hzs|]. split; [exact Hwt'|]. split; [exact Hk'|].
+      split; [exact Hbits|]. intros H; discriminate H.
+    + inversion HC; subst s' z' bs. clear HC.
+      exists [], [], syms. rewrite app_nil_r, <- Ewr.
+      split; [apply zstep_refl; assumption|]. split; [exact Hwt1|]. split; [exact Hk1|].
+      split; [|intros H; discriminate H].
+      cbn [fin_bs enc_out enc_from]. rewrite Ebi, rk_quiet_pend by exact Hq1. rewrite !app_nil_r. reflexivity.
+Qed.

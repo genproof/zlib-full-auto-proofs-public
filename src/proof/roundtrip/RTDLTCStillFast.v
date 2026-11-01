@@ -1,0 +1,73 @@
+(** * Core part of the deflate law theory: cf_still, part fast.  Definitions: RTDLTCStill.v. *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Export Zlib.proof.roundtrip.RTDLTCStill.
+Require Import Zlib.proof.roundtrip.RTDLTCStillFastKit Zlib.proof.roundtrip.RTDLTCFastRefill Zlib.proof.roundtrip.RTDLTCFastGlue.
+Import ListNotations.
+Local Open Scope Z_scope.
+Open Scope cmodel_scope.
+
+Theorem still_fast_ok : fill_idem_spec -> fill_spec -> ins_spec -> lm_spec -> tally_spec2 -> fbo_spec ->
+  fpend_spec2 -> fast_spec ->
+  forall s z flush, compress_pre s z flush -> still_at s -> fn_of s = 1 -> still_concl c_deflate_fast s z flush.
+Proof.
+  intros Hidem Hfill Hin Hlm Hta Hfb _ _ s z flush Hpre (Hst & Hbs & Hla) Hfn s' z' bs Hrun Hni.
+  destruct Hpre as (HW & Ho & Hq & Hfl & Hzi & Hwr & Ha).
+  pose proof (zin_ok_zall z Hzi) as Hz.
+  assert (Hfp : fill_pre s).
+  { destruct HW as (Hp & Hs & Hpos & Hw & Hh & _).
+    assert (Hlev := fn_of_fast s Hp Hfn).
+    unfold whash in Hh. destruct (Z.eqb_spec (d_level s) 0) as [E|N]; [lia|].
+    destruct Hh as (_ & Hc).
+    split; [exact Hp|]. split; [exact Hs|]. split; [exact Hpos|]. split; [exact Hw|exact Hc]. }
+  assert (Hws : 512 <= d_w_size s).
+  { destruct HW as ((Hb & Hs & _) & _). rewrite Hs. change 512 with (2 ^ 9).
+    apply Z.pow_le_mono_r; lia. }
+  destruct (Hfill s z Hfp Hz Ha) as (s1 & z1 & k1 & d & Hfw & Hfp1 & Hk & Hzs & Hd & Es & Eb & _ & _ &
+    El & Hss & Hor & Hhw).
+  assert (Hd0 : d = 0).
+  { destruct Hd as [Hd|(_ & Hd)]; [exact Hd|]. unfold MAX_DIST in Hd.
+    replace MIN_LOOKAHEAD with 262 in Hd by reflexivity. lia. }
+  subst d.
+  assert (Hs1 : d_strstart s1 = 0) by lia.
+  assert (Hn0 : need_min_lookahead s = true).
+  { unfold need_min_lookahead. rewrite Hla. reflexivity. }
+  assert (Hk0 : 0 <= k1) by (destruct Hzs as (_ & Hk1 & _); lia).
+  destruct (Z.eq_dec k1 0) as [Ek|Nk].
+  - (* nothing read: the first iteration leaves at once *)
+    subst k1.
+    assert (Hn1 : need_min_lookahead s1 = true).
+    { unfold need_min_lookahead. rewrite El, Hla. reflexivity. }
+    destruct (Z.eqb_spec flush Z_NO_FLUSH) as [Ef|Nf].
+    + assert (Eb1 : df_body flush (s, z) = Some (inr (s1, z1, Some need_more))).
+      { rewrite (fast_body_fill s z flush s1 z1 Hn0 Hfw), Hn1, Ef. reflexivity. }
+      rewrite (fast_exit_some s z flush s1 z1 s' z' bs Eb1 Hrun). exact Hs1.
+    + assert (Eb1 : df_body flush (s, z) = Some (inr (s1, z1, None))).
+      { rewrite (fast_body_fill s z flush s1 z1 Hn0 Hfw), Hn1.
+        destruct (Z.eqb_spec flush Z_NO_FLUSH) as [E|_]; [contradiction|].
+        rewrite El, Hla. reflexivity. }
+      rewrite (fast_exit_none s z flush s1 z1 s' z' bs Eb1 Hrun). exact Hs1.
+  - (* RESTART: the run is the run from the state after the fill, which reads more *)
+    destruct (refill_fill_FI s z flush s1 z1 k1 0 HW Ho Hq Hz Ha Hfn Hfp1 Hk Hzs Es Eb El)
+      as (HFI & Ews & Ewz & Eai).
+    destruct (FI_parts _ _ _ _ _ _ HFI Hfn) as (HW1 & Ho1 & Hq1 & Hz1 & Ha1 & Hfn1).
+    assert (Ebody : df_body flush (s, z) = df_body flush (s1, z1)).
+    { rewrite (fast_body_fill s z flush s1 z1 Hn0 Hfw).
+      destruct (need_min_lookahead s1) eqn:Hn1.
+      - assert (Hai1 : z_avail_in z1 = 0).
+        { destruct Hor as [Hor|Hor]; [|exact Hor].
+          unfold need_min_lookahead in Hn1. apply Z.ltb_lt in Hn1. lia. }
+        assert (Hid : c_fill_window s1 z1 = Some (s1, z1)).
+        { apply Hidem; [exact Hfp1|exact Hz1|exact Ha1|exact Hai1| |].
+          - rewrite Ews. unfold MAX_DIST in *. rewrite Ews. exact Hss.
+          - rewrite Ewz. exact Hhw. }
+        rewrite (fast_body_fill s1 z1 flush s1 z1 Hn1 Hid), Hn1. reflexivity.
+      - rewrite (fast_body_nofill s1 z1 flush Hn1). cbn [andb]. rewrite El, Hla.
+        destruct (Z.eqb_spec (0 + k1) 0) as [E|_]; [lia|]. reflexivity. }
+    rewrite (fast_restart s z flush s1 z1 Ebody) in Hrun.
+    destruct (fast_run_zall Hfill Hin Hlm Hta Hfb s1 z1 flush HW1 Ho1 Hq1 Hz1 Ha1 Hfn1 Hfl)
+      as (s2 & z2 & bs2 & k & x & Er & Hzs2).
+    rewrite Er in Hrun. inversion Hrun; subst s2 z2 bs2.
+    destruct Hzs2 as (_ & Hk2 & En2 & _). destruct Hzs as (_ & _ & En1 & _).
+    lia.
+Qed.

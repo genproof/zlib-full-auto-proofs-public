@@ -1,0 +1,46 @@
+(* RT-I: copy of rfc1951/DecDecLit.v over the generalized definitions RTIGDefs.v. *)
+(* Part of DecDec.group_dec: the pass from LIT.  Statements: DecDecDefs.v. *)
+From Coq Require Import ZArith List Lia Bool.
+Require Import VST.zlist.sublist.
+Require Import Zlib.proof.roundtrip.RTIGDecDecKd.
+Import ListNotations.
+Local Open Scope Z_scope.
+
+Lemma pass_lit : lay_stmt -> pass_ok LIT c_LIT.
+Proof.
+  intros LAY G pos inp ob flush m Ctx K D Hl Hmd.
+  pose proof Ctx as (Gok & _).
+  pose proof (kd_at _ _ _ _ _ K) as At.
+  destruct (at_mode_lit_e _ _ _ _ _ _ At Hmd) as (Hh & k & j & ll & dl & syms & p0 & b & IH & Hj & Hs & Hlen & Ho & Hq & Hb).
+  destruct (LAY G (m_s m) k j ll dl syms p0 Gok IH) as (_ & _ & _ & _ & _ & _ & L1 & _).
+  destruct (L1 Hj) as (SO & _ & _ & Oj & IH1). clear L1. rewrite Hs in SO, Oj, IH1.
+  destruct SO as (Bb & _).
+  destruct (LAY G (m_s m) k (j + 1) ll dl syms _ Gok IH1) as (_ & _ & _ & _ & _ & (rest & Fr) & _).
+  assert (Hmd' : md_dec (m_mode m)) by (unfold md_dec; tauto).
+  unfold c_LIT. destruct (m_left m =? 0) eqn:EL.
+  - cbn [dstep_post]. split; [|split].
+    + apply kd_tr with m; auto; try reflexivity.
+      * apply same_fix_refl.
+      * right; exact Hmd'.
+    + exists []. rewrite app_nil_r. reflexivity.
+    + intros _. right; right; left. cbn [set_leave m_ow m_left set_m_leave]. unfold m_left in EL.
+      split; [apply Z.eqb_eq; exact EL|].
+      rewrite Ho. rewrite Fr, Oj. cbn [sym_data]. rewrite !Zlength_app, Zlength_cons, Zlength_nil.
+      pose proof (Zlength_nonneg rest). lia.
+  - cbn [dstep_post]. split; [|split].
+    + apply kd_tr with m; auto; try reflexivity.
+      * unfold set_mode, upd_s. sf_auto.
+      * right. cbn. unfold md_dec; tauto.
+      * apply at_mode_len_i.
+        -- exact Hh.
+        -- right; reflexivity.
+        -- exists k, (j + 1), ll, dl, syms, (p0 + Zlength (send_one ll dl (Lit b))).
+           split; [|split; [|split]].
+           ++ apply in_huff_tr with (m_s m); [unfold set_mode, upd_s; sf_auto|exact IH1].
+           ++ cbn [m_ow set_mode upd_s set_m_s set_m_ow]. rewrite app_assoc, Ho, Oj. cbn [sym_data].
+              rewrite <- Hlen. rewrite Z.mod_small; [reflexivity|]. unfold byte_ok in Bb. rewrite Hlen. lia.
+           ++ cbn [m_nx m_bits set_mode upd_s set_m_s set_m_ow]. rewrite Hq. reflexivity.
+           ++ left. exact Hb.
+    + exists [b mod 256]. rewrite <- Hlen. reflexivity.
+    + intros E. exfalso. cbn [set_mode upd_s m_leave set_m_s set_m_ow] in E. lia.
+Qed.
